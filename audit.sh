@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v26.0)
+# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v27.0)
 # ==============================================================================
 # Invariants: I1–I4.
 # No `2>/dev/null` – all stderr is visible.
@@ -91,7 +91,6 @@ run_self_test() {
     ensure_pytest_cov() {
         local venv_dir="$1"
         if python3 -c "import pytest, pytest_cov" 2>/dev/null; then
-            # Already available – use system python
             echo "  [INFO] pytest-cov available in system Python."
             return 0
         fi
@@ -201,16 +200,8 @@ F3EOF
         AUDIT_FORCE_NO_PYTEST=1
 
     # --- G: coverage below floor (dependency-managed) ---
-    # Create a temporary venv for coverage test if needed
     COV_VENV="$BASE/venv_cov"
     if ensure_pytest_cov "$COV_VENV"; then
-        # If we created a venv, use its python to run the audit.
-        # We need to run the audit with the venv's python in PATH.
-        # We'll use a wrapper that sources the venv before running the audit.
-        # But we can also just set environment variables.
-        # Simpler: run the test case with COV_VENV set, and the audit will use the venv's python.
-        # However, the audit script uses 'python3' directly. We can override PATH.
-        # We'll set PATH to include the venv's bin first.
         if [ -d "$COV_VENV/bin" ]; then
             export PATH="$COV_VENV/bin:$PATH"
         fi
@@ -237,7 +228,6 @@ CTESTEOF
         run_case "G coverage below floor (measured) -> FAIL" "$d" 1 'Below the .* floor' \
             AUDIT_FORCE_NO_COV=0 COV_TARGET=mymod MIN_COVERAGE_THRESHOLD=70
     else
-        # If we couldn't install pytest-cov, we cannot test coverage – that's a failure.
         FAIL_N=$((FAIL_N + 1))
         printf '  [FAIL] %-46s (could not install pytest-cov – coverage test cannot run)\n' \
                "G coverage below floor"
@@ -311,7 +301,7 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v26.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v27.0)                    "
 log_info "================================================================================"
 log_info "Date:      $(date)"
 log_info "Directory: $(pwd)"
@@ -631,10 +621,12 @@ PYEOF
         COV_STMTS=0
         while IFS= read -r line; do
             if [[ "$line" =~ ^TOTAL[[:space:]]+ ]]; then
-                pct=$(echo "$line" | awk '{for(i=1;i<=NF;i++) if($i~/%$/) p=$i} END{print p}')
+                # Extract percentage using grep -oE (robust)
+                pct=$(echo "$line" | grep -oE '[0-9]+%' | head -n1 | tr -d '%')
+                # Extract statements count (second field)
                 stmts=$(echo "$line" | awk '{print $2}')
                 if [[ -n "$pct" && "$stmts" =~ ^[0-9]+$ ]]; then
-                    COV_PCT="${pct%\%}"
+                    COV_PCT="$pct"
                     COV_STMTS="$stmts"
                     break
                 fi
