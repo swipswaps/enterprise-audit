@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v24.0)
+# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v26.0)
 # ==============================================================================
 # Invariants: I1–I4.
 # No `2>/dev/null` – all stderr is visible.
@@ -50,7 +50,7 @@ grep_py() {
 # SELF-TEST MODE
 # ------------------------------------------------------------------------------
 run_self_test() {
-    local BASE PASS_N=0 FAIL_N=0
+    local BASE PASS_N=0 FAIL_N=0 SKIP_N=0
     BASE="$(mktemp -d -t audit_selftest.XXXXXX || mktemp -d)"
     trap 'rm -rf "$BASE"; rm -f ./.coverage ./.coverage.*' EXIT
 
@@ -87,9 +87,33 @@ run_self_test() {
         fi
     }
 
+    # Helper: ensure we have pytest-cov – install in a temporary venv if missing
+    ensure_pytest_cov() {
+        local venv_dir="$1"
+        if python3 -c "import pytest, pytest_cov" 2>/dev/null; then
+            # Already available – use system python
+            echo "  [INFO] pytest-cov available in system Python."
+            return 0
+        fi
+        echo "  [INFO] pytest-cov not found – creating temporary virtual environment..."
+        python3 -m venv "$venv_dir" || {
+            echo "  [ERROR] Failed to create virtual environment." >&2
+            return 1
+        }
+        # shellcheck source=/dev/null
+        source "$venv_dir/bin/activate"
+        pip install --quiet pytest pytest-cov || {
+            echo "  [ERROR] Failed to install pytest/pytest-cov." >&2
+            return 1
+        }
+        deactivate
+        echo "  [INFO] pytest-cov installed in temporary venv."
+        return 0
+    }
+
     local d
 
-    # --- A: passing suite (unittest.TestCase) ---
+    # A: passing suite
     d="$BASE/A_pass"; mkdir -p "$d"
     cat > "$d/test_ok.py" <<'PASSEOF'
 import unittest
@@ -99,7 +123,7 @@ class TestMath(unittest.TestCase):
 PASSEOF
     run_case "A clean + passing suite" "$d" 0 'VERDICT: PASS'
 
-    # --- B: failing suite (unittest.TestCase) ---
+    # B: failing suite
     d="$BASE/B_fail"; mkdir -p "$d"
     cat > "$d/test_bad.py" <<'FAILEOF'
 import unittest
@@ -109,14 +133,14 @@ class TestBroken(unittest.TestCase):
 FAILEOF
     run_case "B real failing suite" "$d" 1 'VERDICT: FAIL'
 
-    # --- C: conftest-only (0 collected) ---
+    # C: conftest-only (0 collected)
     d="$BASE/C_skip"; mkdir -p "$d/tests"
     cat > "$d/tests/conftest.py" <<'CONFEOF'
 # Fixtures only
 CONFEOF
     run_case "C conftest-only (0 collected)" "$d" 0 'test SKIP'
 
-    # --- C2: policy promotion ---
+    # C2: policy promotion
     d="$BASE/C2_policy"; mkdir -p "$d/tests"
     cat > "$d/tests/conftest.py" <<'CONF2EOF'
 # conftest only
@@ -124,7 +148,7 @@ CONF2EOF
     run_case "C2 no-tests + REQUIRE_TESTS=1 (policy)" "$d" 1 'POLICY|policy' \
         AUDIT_REQUIRE_TESTS=1
 
-    # --- D: passing suite nested 3 deep ---
+    # D: passing suite nested 3 deep
     d="$BASE/D_nested"; mkdir -p "$d/tests/unit/deep"
     cat > "$d/tests/unit/deep/test_deep.py" <<'NESTEOF'
 import unittest
@@ -134,7 +158,7 @@ class TestDeep(unittest.TestCase):
 NESTEOF
     run_case "D passing suite nested 3 deep" "$d" 0 'VERDICT: PASS'
 
-    # --- E: URL extraction ---
+    # E: URL extraction
     d="$BASE/E_url"; mkdir -p "$d"
     cat > "$d/app.py" <<'URLEOF'
 HEALTHCHECK = "http://example.invalid/health"
@@ -144,7 +168,7 @@ def test_placeholder():
 URLEOF
     run_case "E URL fetched (not line number)" "$d" 0 'example\.invalid/health'
 
-    # --- F1: no git ---
+    # F1: no git
     d="$BASE/F1_nogit"; mkdir -p "$d"
     cat > "$d/test_ok.py" <<'F1EOF'
 import unittest
@@ -155,7 +179,7 @@ F1EOF
     run_case "F1 no git -> section SKIP, verdict OK" "$d" 0 'Not inside a git repository' \
         AUDIT_FORCE_NO_GIT=1
 
-    # --- F2: no curl ---
+    # F2: no curl
     d="$BASE/F2_nocurl"; mkdir -p "$d"
     cat > "$d/app.py" <<'F2EOF'
 URL = "http://example.invalid/x"
@@ -165,7 +189,7 @@ F2EOF
     run_case "F2 no curl -> URL check SKIP" "$d" 0 'curl not installed' \
         AUDIT_FORCE_NO_CURL=1
 
-    # --- F3: no pytest -> fallback PASS ---
+    # F3: no pytest -> fallback PASS
     d="$BASE/F3_nopytest"; mkdir -p "$d"
     cat > "$d/test_ok.py" <<'F3EOF'
 import unittest
@@ -176,8 +200,20 @@ F3EOF
     run_case "F3 no pytest -> fallback PASS" "$d" 0 'VERDICT: PASS' \
         AUDIT_FORCE_NO_PYTEST=1
 
-    # --- G: coverage below floor (only if pytest-cov available) ---
-    if python3 -c "import pytest, pytest_cov"; then
+    # --- G: coverage below floor (dependency-managed) ---
+    # Create a temporary venv for coverage test if needed
+    COV_VENV="$BASE/venv_cov"
+    if ensure_pytest_cov "$COV_VENV"; then
+        # If we created a venv, use its python to run the audit.
+        # We need to run the audit with the venv's python in PATH.
+        # We'll use a wrapper that sources the venv before running the audit.
+        # But we can also just set environment variables.
+        # Simpler: run the test case with COV_VENV set, and the audit will use the venv's python.
+        # However, the audit script uses 'python3' directly. We can override PATH.
+        # We'll set PATH to include the venv's bin first.
+        if [ -d "$COV_VENV/bin" ]; then
+            export PATH="$COV_VENV/bin:$PATH"
+        fi
         d="$BASE/G_cov"; mkdir -p "$d"
         cat > "$d/mymod.py" <<'MODEOF'
 def covered():
@@ -201,12 +237,13 @@ CTESTEOF
         run_case "G coverage below floor (measured) -> FAIL" "$d" 1 'Below the .* floor' \
             AUDIT_FORCE_NO_COV=0 COV_TARGET=mymod MIN_COVERAGE_THRESHOLD=70
     else
+        # If we couldn't install pytest-cov, we cannot test coverage – that's a failure.
         FAIL_N=$((FAIL_N + 1))
-        printf '  [FAIL] %-46s (pytest/pytest-cov unavailable to prove it)\n' \
+        printf '  [FAIL] %-46s (could not install pytest-cov – coverage test cannot run)\n' \
                "G coverage below floor"
     fi
 
-    # --- H: git pull failure (no remote) ---
+    # H: git pull failure (no remote)
     d="$BASE/H_git_rebase"; mkdir -p "$d"
     cd "$d" || return 1
     git init -b main
@@ -217,7 +254,7 @@ CTESTEOF
     cd - || return 1
 
     echo "--------------------------------------------------------------------------------"
-    printf '  SELF-TEST TOTAL: %d passed, %d failed\n' "$PASS_N" "$FAIL_N"
+    printf '  SELF-TEST TOTAL: %d passed, %d failed, %d skipped\n' "$PASS_N" "$FAIL_N" "$SKIP_N"
     echo "================================================================================"
     [ "$FAIL_N" -eq 0 ]
 }
@@ -274,7 +311,7 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v24.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v26.0)                    "
 log_info "================================================================================"
 log_info "Date:      $(date)"
 log_info "Directory: $(pwd)"
