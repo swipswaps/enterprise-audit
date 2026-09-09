@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v31.0)
+# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v32.0)
 # ==============================================================================
 # Invariants: I1–I4.
 # No `2>/dev/null` – all stderr is visible.
@@ -301,7 +301,7 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v31.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v32.0)                    "
 log_info "================================================================================"
 log_info "Date:      $(date)"
 log_info "Directory: $(pwd)"
@@ -612,38 +612,23 @@ PYEOF
             COV_ARGS+=("--cov-report=html:htmlcov")
         fi
 
+        # Run pytest and capture output to TMP_COV_OUT
         python3 -m pytest "${COV_ARGS[@]}" -v --tb=short 2>&1 | tee "$TMP_COV_OUT"
         TEST_EXIT_CODE=${PIPESTATUS[0]}
 
         echo ""
         log_info "--- [COVERAGE ANALYSIS] ---"
 
-        # ---- ROBUST PARSER WITH DEBUG ----
-        # Print the first 10 lines of TMP_COV_OUT for debugging
-        log_info "Debug: First 10 lines of coverage output:"
-        head -n 10 "$TMP_COV_OUT" | while IFS= read -r line; do
-            log_info "  $line"
-        done
+        # Use `coverage report --fail-under` for bulletproof gating
+        COV_REPORT_OUT="$(mktemp)"
+        COV_FAIL_EXIT=0
+        python3 -m coverage report --fail-under="$MIN_COVERAGE_THRESHOLD" 2>&1 | tee "$COV_REPORT_OUT" || COV_FAIL_EXIT=$?
 
-        # Extract TOTAL line – case-insensitive, leading spaces allowed
-        TOTAL_LINE=$(grep -i '^[[:space:]]*total' "$TMP_COV_OUT" | head -n1)
-        if [ -z "$TOTAL_LINE" ]; then
-            # Fallback: look for any line containing "total" and a percentage
-            TOTAL_LINE=$(grep -i total "$TMP_COV_OUT" | grep -E '[0-9]+%' | head -n1)
-        fi
+        # Extract the coverage percentage for the log
+        COV_PCT=$(grep -E '^TOTAL' "$COV_REPORT_OUT" | awk '{print $NF}' | tr -d '%')
+        COV_STMTS=$(grep -E '^TOTAL' "$COV_REPORT_OUT" | awk '{print $2}')
 
-        if [ -n "$TOTAL_LINE" ]; then
-            log_info "Debug: TOTAL_LINE = $TOTAL_LINE"
-            COV_PCT=$(echo "$TOTAL_LINE" | awk '{print $NF}' | tr -d '%')
-            COV_STMTS=$(echo "$TOTAL_LINE" | awk '{print $2}')
-            log_info "Debug: COV_PCT=$COV_PCT, COV_STMTS=$COV_STMTS"
-        else
-            COV_PCT=""
-            COV_STMTS=""
-            log_warn "Debug: No TOTAL line found in coverage output."
-        fi
-
-        rm -f "$TMP_COV_OUT" ./.coverage ./.coverage.*
+        rm -f "$COV_REPORT_OUT" "$TMP_COV_OUT" ./.coverage ./.coverage.*
 
         case "$TEST_EXIT_CODE" in
             0) TEST_STATE="pass" ;;
@@ -654,8 +639,7 @@ PYEOF
 
         if [ -n "$COV_PCT" ] && [ "${COV_STMTS:-0}" -gt 0 ]; then
             log_info "Total line coverage: $COV_PCT% (${COV_STMTS} statements)"
-            if awk -v c="$COV_PCT" -v t="$MIN_COVERAGE_THRESHOLD" \
-                   'BEGIN { exit !(c + 0 >= t + 0) }'; then
+            if [ "$COV_FAIL_EXIT" -eq 0 ]; then
                 log_info "Coverage meets the ${MIN_COVERAGE_THRESHOLD}% floor."
             else
                 log_warn "Coverage below the ${MIN_COVERAGE_THRESHOLD}% floor."
