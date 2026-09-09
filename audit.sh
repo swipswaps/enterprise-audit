@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v30.0)
+# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v31.0)
 # ==============================================================================
 # Invariants: I1–I4.
 # No `2>/dev/null` – all stderr is visible.
@@ -301,7 +301,7 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v30.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v31.0)                    "
 log_info "================================================================================"
 log_info "Date:      $(date)"
 log_info "Directory: $(pwd)"
@@ -618,16 +618,29 @@ PYEOF
         echo ""
         log_info "--- [COVERAGE ANALYSIS] ---"
 
-        # ---- BULLETPROOF PARSER ----
-        # Extract the TOTAL line directly from pytest output
-        TOTAL_LINE=$(grep -E '^TOTAL' "$TMP_COV_OUT" | head -n1)
+        # ---- ROBUST PARSER WITH DEBUG ----
+        # Print the first 10 lines of TMP_COV_OUT for debugging
+        log_info "Debug: First 10 lines of coverage output:"
+        head -n 10 "$TMP_COV_OUT" | while IFS= read -r line; do
+            log_info "  $line"
+        done
+
+        # Extract TOTAL line – case-insensitive, leading spaces allowed
+        TOTAL_LINE=$(grep -i '^[[:space:]]*total' "$TMP_COV_OUT" | head -n1)
+        if [ -z "$TOTAL_LINE" ]; then
+            # Fallback: look for any line containing "total" and a percentage
+            TOTAL_LINE=$(grep -i total "$TMP_COV_OUT" | grep -E '[0-9]+%' | head -n1)
+        fi
+
         if [ -n "$TOTAL_LINE" ]; then
+            log_info "Debug: TOTAL_LINE = $TOTAL_LINE"
             COV_PCT=$(echo "$TOTAL_LINE" | awk '{print $NF}' | tr -d '%')
             COV_STMTS=$(echo "$TOTAL_LINE" | awk '{print $2}')
+            log_info "Debug: COV_PCT=$COV_PCT, COV_STMTS=$COV_STMTS"
         else
-            # Fallback: last percentage and its statements
-            COV_PCT=$(grep -oE '[0-9]+%' "$TMP_COV_OUT" | tail -n1 | tr -d '%')
-            COV_STMTS=$(grep -E '[0-9]+%' "$TMP_COV_OUT" | tail -n1 | awk '{print $2}')
+            COV_PCT=""
+            COV_STMTS=""
+            log_warn "Debug: No TOTAL line found in coverage output."
         fi
 
         rm -f "$TMP_COV_OUT" ./.coverage ./.coverage.*
