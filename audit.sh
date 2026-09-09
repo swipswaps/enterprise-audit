@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v29.0)
+# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v30.0)
 # ==============================================================================
 # Invariants: I1–I4.
 # No `2>/dev/null` – all stderr is visible.
@@ -301,7 +301,7 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v29.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v30.0)                    "
 log_info "================================================================================"
 log_info "Date:      $(date)"
 log_info "Directory: $(pwd)"
@@ -618,20 +618,16 @@ PYEOF
         echo ""
         log_info "--- [COVERAGE ANALYSIS] ---"
 
-        # Use coverage report directly for reliable parsing
-        COV_REPORT=$(python3 -m coverage report 2>&1)
-        # Extract TOTAL line: look for a line with "TOTAL" and extract percentage and statements
-        TOTAL_LINE=$(echo "$COV_REPORT" | grep -E '^TOTAL')
+        # ---- BULLETPROOF PARSER ----
+        # Extract the TOTAL line directly from pytest output
+        TOTAL_LINE=$(grep -E '^TOTAL' "$TMP_COV_OUT" | head -n1)
         if [ -n "$TOTAL_LINE" ]; then
             COV_PCT=$(echo "$TOTAL_LINE" | awk '{print $NF}' | tr -d '%')
             COV_STMTS=$(echo "$TOTAL_LINE" | awk '{print $2}')
         else
-            # Fallback: parse from the pytest output
+            # Fallback: last percentage and its statements
             COV_PCT=$(grep -oE '[0-9]+%' "$TMP_COV_OUT" | tail -n1 | tr -d '%')
-            COV_STMTS=$(grep -E '^TOTAL' "$TMP_COV_OUT" | awk '{print $2}')
-            if [ -z "$COV_STMTS" ]; then
-                COV_STMTS=$(grep -E '[0-9]+%' "$TMP_COV_OUT" | tail -n1 | awk '{print $2}')
-            fi
+            COV_STMTS=$(grep -E '[0-9]+%' "$TMP_COV_OUT" | tail -n1 | awk '{print $2}')
         fi
 
         rm -f "$TMP_COV_OUT" ./.coverage ./.coverage.*
