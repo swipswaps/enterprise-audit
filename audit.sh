@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v23.0)
+# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v24.0)
 # ==============================================================================
 # Invariants: I1–I4.
 # No `2>/dev/null` – all stderr is visible.
@@ -89,26 +89,34 @@ run_self_test() {
 
     local d
 
+    # --- A: passing suite (unittest.TestCase) ---
     d="$BASE/A_pass"; mkdir -p "$d"
     cat > "$d/test_ok.py" <<'PASSEOF'
-def test_math():
-    assert 1 + 1 == 2
+import unittest
+class TestMath(unittest.TestCase):
+    def test_math(self):
+        self.assertEqual(1 + 1, 2)
 PASSEOF
     run_case "A clean + passing suite" "$d" 0 'VERDICT: PASS'
 
+    # --- B: failing suite (unittest.TestCase) ---
     d="$BASE/B_fail"; mkdir -p "$d"
     cat > "$d/test_bad.py" <<'FAILEOF'
-def test_broken():
-    assert 1 + 1 == 3
+import unittest
+class TestBroken(unittest.TestCase):
+    def test_broken(self):
+        self.assertEqual(1 + 1, 3)
 FAILEOF
     run_case "B real failing suite" "$d" 1 'VERDICT: FAIL'
 
+    # --- C: conftest-only (0 collected) ---
     d="$BASE/C_skip"; mkdir -p "$d/tests"
     cat > "$d/tests/conftest.py" <<'CONFEOF'
 # Fixtures only
 CONFEOF
     run_case "C conftest-only (0 collected)" "$d" 0 'test SKIP'
 
+    # --- C2: policy promotion ---
     d="$BASE/C2_policy"; mkdir -p "$d/tests"
     cat > "$d/tests/conftest.py" <<'CONF2EOF'
 # conftest only
@@ -116,13 +124,17 @@ CONF2EOF
     run_case "C2 no-tests + REQUIRE_TESTS=1 (policy)" "$d" 1 'POLICY|policy' \
         AUDIT_REQUIRE_TESTS=1
 
+    # --- D: passing suite nested 3 deep ---
     d="$BASE/D_nested"; mkdir -p "$d/tests/unit/deep"
     cat > "$d/tests/unit/deep/test_deep.py" <<'NESTEOF'
-def test_deep_pass():
-    assert "ok" == "ok"
+import unittest
+class TestDeep(unittest.TestCase):
+    def test_deep_pass(self):
+        self.assertEqual("ok", "ok")
 NESTEOF
     run_case "D passing suite nested 3 deep" "$d" 0 'VERDICT: PASS'
 
+    # --- E: URL extraction ---
     d="$BASE/E_url"; mkdir -p "$d"
     cat > "$d/app.py" <<'URLEOF'
 HEALTHCHECK = "http://example.invalid/health"
@@ -132,14 +144,18 @@ def test_placeholder():
 URLEOF
     run_case "E URL fetched (not line number)" "$d" 0 'example\.invalid/health'
 
+    # --- F1: no git ---
     d="$BASE/F1_nogit"; mkdir -p "$d"
     cat > "$d/test_ok.py" <<'F1EOF'
-def test_pass():
-    assert True
+import unittest
+class TestPass(unittest.TestCase):
+    def test_pass(self):
+        self.assertTrue(True)
 F1EOF
     run_case "F1 no git -> section SKIP, verdict OK" "$d" 0 'Not inside a git repository' \
         AUDIT_FORCE_NO_GIT=1
 
+    # --- F2: no curl ---
     d="$BASE/F2_nocurl"; mkdir -p "$d"
     cat > "$d/app.py" <<'F2EOF'
 URL = "http://example.invalid/x"
@@ -149,14 +165,18 @@ F2EOF
     run_case "F2 no curl -> URL check SKIP" "$d" 0 'curl not installed' \
         AUDIT_FORCE_NO_CURL=1
 
+    # --- F3: no pytest -> fallback PASS ---
     d="$BASE/F3_nopytest"; mkdir -p "$d"
     cat > "$d/test_ok.py" <<'F3EOF'
-def test_pass():
-    assert 2 * 2 == 4
+import unittest
+class TestFallback(unittest.TestCase):
+    def test_pass(self):
+        self.assertEqual(2 * 2, 4)
 F3EOF
     run_case "F3 no pytest -> fallback PASS" "$d" 0 'VERDICT: PASS' \
         AUDIT_FORCE_NO_PYTEST=1
 
+    # --- G: coverage below floor (only if pytest-cov available) ---
     if python3 -c "import pytest, pytest_cov"; then
         d="$BASE/G_cov"; mkdir -p "$d"
         cat > "$d/mymod.py" <<'MODEOF'
@@ -186,6 +206,7 @@ CTESTEOF
                "G coverage below floor"
     fi
 
+    # --- H: git pull failure (no remote) ---
     d="$BASE/H_git_rebase"; mkdir -p "$d"
     cd "$d" || return 1
     git init -b main
@@ -253,7 +274,7 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v23.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v24.0)                    "
 log_info "================================================================================"
 log_info "Date:      $(date)"
 log_info "Directory: $(pwd)"
