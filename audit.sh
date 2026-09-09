@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v27.0)
+# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v28.0)
 # ==============================================================================
 # Invariants: I1–I4.
 # No `2>/dev/null` – all stderr is visible.
@@ -301,7 +301,7 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v27.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v28.0)                    "
 log_info "================================================================================"
 log_info "Date:      $(date)"
 log_info "Directory: $(pwd)"
@@ -617,21 +617,13 @@ PYEOF
 
         echo ""
         log_info "--- [COVERAGE ANALYSIS] ---"
-        COV_PCT=""
-        COV_STMTS=0
-        while IFS= read -r line; do
-            if [[ "$line" =~ ^TOTAL[[:space:]]+ ]]; then
-                # Extract percentage using grep -oE (robust)
-                pct=$(echo "$line" | grep -oE '[0-9]+%' | head -n1 | tr -d '%')
-                # Extract statements count (second field)
-                stmts=$(echo "$line" | awk '{print $2}')
-                if [[ -n "$pct" && "$stmts" =~ ^[0-9]+$ ]]; then
-                    COV_PCT="$pct"
-                    COV_STMTS="$stmts"
-                    break
-                fi
-            fi
-        done < "$TMP_COV_OUT"
+        # Robust parsing: grab the last percentage (total coverage) and statements from TOTAL line
+        COV_PCT=$(grep -oE '[0-9]+%' "$TMP_COV_OUT" | tail -n1 | tr -d '%')
+        COV_STMTS=$(grep -E '^TOTAL' "$TMP_COV_OUT" | awk '{print $2}')
+        # If COV_STMTS is empty, try to get it from the last line that has a percentage
+        if [ -z "$COV_STMTS" ]; then
+            COV_STMTS=$(grep -E '[0-9]+%' "$TMP_COV_OUT" | tail -n1 | awk '{print $2}')
+        fi
         rm -f "$TMP_COV_OUT" ./.coverage ./.coverage.*
 
         case "$TEST_EXIT_CODE" in
@@ -641,6 +633,7 @@ PYEOF
             *) TEST_STATE="fail" ;;
         esac
 
+        # If we have both percentage and statements, evaluate coverage gate
         if [ -n "$COV_PCT" ] && [ "${COV_STMTS:-0}" -gt 0 ]; then
             log_info "Total line coverage: $COV_PCT% (${COV_STMTS} statements)"
             if awk -v c="$COV_PCT" -v t="$MIN_COVERAGE_THRESHOLD" \
@@ -653,6 +646,8 @@ PYEOF
         else
             log_warn "Could not parse coverage TOTAL or 0 statements measured;"
             log_warn "check COV_TARGET (currently '$COV_TARGET'). Not gating on coverage."
+            # Since we're in strict mode, treat this as a failure
+            [ "$TEST_STATE" != "skip" ] && TEST_STATE="fail"
         fi
 
     elif [ "$HAS_PYTEST" = true ]; then
