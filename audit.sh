@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise Audit Tool (v48.0)
+# Enterprise Audit Tool (v49.0)
 # ==============================================================================
 # Invariants: I1–I4. No `sed`. No `2>/dev/null`. No `>/dev/null`.
 #
@@ -21,10 +21,15 @@ set -uo pipefail
 
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/$(basename "${BASH_SOURCE[0]:-$0}")"
 
+# No stdout leak: capture command -v output inside a substitution.
 run_with_timeout() {
     local duration="$1"; shift
-    if command -v timeout; then timeout "$duration" "$@"
-    else echo "[WARNING] 'timeout' not found; running without time limit." >&2; "$@"; fi
+    if [ -n "$(command -v timeout)" ]; then
+        timeout "$duration" "$@"
+    else
+        echo "[WARNING] 'timeout' not found; running without time limit." >&2
+        "$@"
+    fi
 }
 
 grep_py() {
@@ -53,7 +58,6 @@ run_self_test() {
         local out rc verdict ok="OK"
         local env_args=()
         for arg in "$@"; do env_args+=("$arg"); done
-        # Persistent log per case (paths printed by the audit remain valid after run)
         local slug report_path
         slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_')"
         report_path="$SELFTEST_REPORTS/${slug}.txt"
@@ -260,7 +264,7 @@ log_warn()  { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v48.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v49.0)                    "
 log_info "================================================================================"
 log_info "Date: $(date)  Directory: $(pwd)"
 log_info "Log: $LOG_FILE  Coverage floor: ${MIN_COVERAGE_THRESHOLD}%"
@@ -307,7 +311,7 @@ fi
 
 log_info ">>> [2/6] PYTHON CODE LINTING & SYNTAX ANALYSIS"
 log_info "--- [2A] py_compile ---"
-if command -v python3; then
+if [ -n "$(command -v python3)" ]; then
     run_with_timeout 30 python3 - <<'PYEOF'
 import os, py_compile
 IGNORE = {'.git','venv','.venv','env','__pycache__','node_modules','build','dist','.pytest_cache','.mypy_cache'}
@@ -330,7 +334,7 @@ grep_py -E "(except[[:space:]]*:|print[[:space:]]*\(|import[[:space:]]+pdb|break
 awk -F: '{ if ($1 ~ /\.py$/) { rest=substr($0,index($0,$3)); print "  [LINT] " $1 " (Line " $2 "): " rest } }' | head -n 30
 
 log_info "--- [2C] Files over 400 lines ---"
-if command -v python3; then
+if [ -n "$(command -v python3)" ]; then
     run_with_timeout 30 python3 - <<'PYEOF'
 import os
 IGNORE = {'.git','venv','.venv','env','__pycache__','node_modules','build','dist','.pytest_cache','.mypy_cache'}
@@ -354,7 +358,7 @@ grep_py -E "(api_key[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9_-]{8,}['\"]|secret[
 awk -F: '{ if ($1 ~ /\.py$/) { rest=substr($0,index($0,$3)); msg=(length(rest)>80)?substr(rest,1,80)"...":rest; print "  [SECURITY] " $1 " (Line " $2 "): " msg } }' | head -n 20
 
 log_info "--- [3B] Mutable default args (AST) ---"
-if command -v python3; then
+if [ -n "$(command -v python3)" ]; then
     run_with_timeout 30 python3 - <<'PYEOF'
 import ast, os
 IGNORE = {'.git','venv','.venv','env','__pycache__','node_modules','build','dist','.pytest_cache','.mypy_cache'}
@@ -383,7 +387,7 @@ grep_py -E "(input[[:space:]]*\(|sys\.exit[[:space:]]*\(|os\._exit[[:space:]]*\(
 awk -F: '{ if ($1 ~ /\.py$/) { rest=substr($0,index($0,$3)); print "  [UX] " $1 " (Line " $2 "): " rest } }' | head -n 15
 
 log_info "--- [4B] External URL health (up to 5) ---"
-if [ "${AUDIT_FORCE_NO_CURL:-0}" != "1" ] && command -v curl; then
+if [ "${AUDIT_FORCE_NO_CURL:-0}" != "1" ] && [ -n "$(command -v curl)" ]; then
     URLS="$(grep -rhoE 'https?://[a-zA-Z0-9._~:/?#@!$&'\''()*+,;=%-]+' \
         --exclude-dir=".git" --exclude-dir="venv" --exclude-dir=".venv" \
         --exclude-dir="node_modules" --exclude="*.txt" --exclude="*.md" . | \
@@ -408,6 +412,7 @@ log_info ">>> [5/6] REPOSITORY METRICS & HYGIENE"
 BIG="$(run_with_timeout 30 find . -type f -size +1M -not -path "*/.git/*" -not -path "*/venv/*" -not -path "*/.venv/*" -not -path "*/node_modules/*")"
 if [ -n "${BIG:-}" ]; then
     printf '%s\n' "$BIG" | while IFS= read -r f; do
+        [ -z "$f" ] && continue
         printf '  [LARGE FILE] %s (%s bytes)\n' "$f" "$(wc -c < "$f" || echo '?')"
     done
 else
@@ -429,7 +434,7 @@ fi
 if [ "$TESTS_FOUND" = false ]; then
     log_info "No test files found. Skipping."
     TEST_STATE="skip"
-elif ! command -v python3; then
+elif [ -z "$(command -v python3)" ]; then
     log_warn "python3 unavailable; SKIP."
     TEST_STATE="skip"
 else
@@ -438,8 +443,8 @@ else
 
     HAS_PYTEST=false
     HAS_COV=false
-    [ "${AUDIT_FORCE_NO_PYTEST:-0}" != "1" ] && python3 -c "import pytest" && HAS_PYTEST=true
-    [ "${AUDIT_FORCE_NO_COV:-0}"    != "1" ] && python3 -c "import pytest_cov" && HAS_COV=true
+    [ "${AUDIT_FORCE_NO_PYTEST:-0}" != "1" ] && python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('pytest') else 1)" && HAS_PYTEST=true
+    [ "${AUDIT_FORCE_NO_COV:-0}"    != "1" ] && python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('pytest_cov') else 1)" && HAS_COV=true
 
     TEST_EXIT_CODE=1
 
