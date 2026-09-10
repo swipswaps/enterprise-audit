@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v32.0)
+# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v33.0)
 # ==============================================================================
 # Invariants: I1–I4.
 # No `2>/dev/null` – all stderr is visible.
 # Only redirection is the tee pipeline for logging (duplicates, never hides).
-# Scans only actual .py files (using find + xargs) to avoid symlink noise.
 # ==============================================================================
 
 # Guard: if sourced from a file, error and return (keep shell alive).
@@ -112,7 +111,6 @@ run_self_test() {
 
     local d
 
-    # A: passing suite
     d="$BASE/A_pass"; mkdir -p "$d"
     cat > "$d/test_ok.py" <<'PASSEOF'
 import unittest
@@ -122,7 +120,6 @@ class TestMath(unittest.TestCase):
 PASSEOF
     run_case "A clean + passing suite" "$d" 0 'VERDICT: PASS'
 
-    # B: failing suite
     d="$BASE/B_fail"; mkdir -p "$d"
     cat > "$d/test_bad.py" <<'FAILEOF'
 import unittest
@@ -132,14 +129,12 @@ class TestBroken(unittest.TestCase):
 FAILEOF
     run_case "B real failing suite" "$d" 1 'VERDICT: FAIL'
 
-    # C: conftest-only (0 collected)
     d="$BASE/C_skip"; mkdir -p "$d/tests"
     cat > "$d/tests/conftest.py" <<'CONFEOF'
 # Fixtures only
 CONFEOF
     run_case "C conftest-only (0 collected)" "$d" 0 'test SKIP'
 
-    # C2: policy promotion
     d="$BASE/C2_policy"; mkdir -p "$d/tests"
     cat > "$d/tests/conftest.py" <<'CONF2EOF'
 # conftest only
@@ -147,7 +142,6 @@ CONF2EOF
     run_case "C2 no-tests + REQUIRE_TESTS=1 (policy)" "$d" 1 'POLICY|policy' \
         AUDIT_REQUIRE_TESTS=1
 
-    # D: passing suite nested 3 deep
     d="$BASE/D_nested"; mkdir -p "$d/tests/unit/deep"
     cat > "$d/tests/unit/deep/test_deep.py" <<'NESTEOF'
 import unittest
@@ -157,7 +151,6 @@ class TestDeep(unittest.TestCase):
 NESTEOF
     run_case "D passing suite nested 3 deep" "$d" 0 'VERDICT: PASS'
 
-    # E: URL extraction
     d="$BASE/E_url"; mkdir -p "$d"
     cat > "$d/app.py" <<'URLEOF'
 HEALTHCHECK = "http://example.invalid/health"
@@ -167,7 +160,6 @@ def test_placeholder():
 URLEOF
     run_case "E URL fetched (not line number)" "$d" 0 'example\.invalid/health'
 
-    # F1: no git
     d="$BASE/F1_nogit"; mkdir -p "$d"
     cat > "$d/test_ok.py" <<'F1EOF'
 import unittest
@@ -178,7 +170,6 @@ F1EOF
     run_case "F1 no git -> section SKIP, verdict OK" "$d" 0 'Not inside a git repository' \
         AUDIT_FORCE_NO_GIT=1
 
-    # F2: no curl
     d="$BASE/F2_nocurl"; mkdir -p "$d"
     cat > "$d/app.py" <<'F2EOF'
 URL = "http://example.invalid/x"
@@ -188,7 +179,6 @@ F2EOF
     run_case "F2 no curl -> URL check SKIP" "$d" 0 'curl not installed' \
         AUDIT_FORCE_NO_CURL=1
 
-    # F3: no pytest -> fallback PASS
     d="$BASE/F3_nopytest"; mkdir -p "$d"
     cat > "$d/test_ok.py" <<'F3EOF'
 import unittest
@@ -233,7 +223,6 @@ CTESTEOF
                "G coverage below floor"
     fi
 
-    # H: git pull failure (no remote)
     d="$BASE/H_git_rebase"; mkdir -p "$d"
     cd "$d" || return 1
     git init -b main
@@ -301,7 +290,7 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v32.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v33.0)                    "
 log_info "================================================================================"
 log_info "Date:      $(date)"
 log_info "Directory: $(pwd)"
@@ -621,8 +610,9 @@ PYEOF
 
         # Use `coverage report --fail-under` for bulletproof gating
         COV_REPORT_OUT="$(mktemp)"
-        COV_FAIL_EXIT=0
-        python3 -m coverage report --fail-under="$MIN_COVERAGE_THRESHOLD" 2>&1 | tee "$COV_REPORT_OUT" || COV_FAIL_EXIT=$?
+        # Run coverage report and capture its exit code correctly
+        python3 -m coverage report --fail-under="$MIN_COVERAGE_THRESHOLD" 2>&1 | tee "$COV_REPORT_OUT"
+        COV_FAIL_EXIT=${PIPESTATUS[0]}
 
         # Extract the coverage percentage for the log
         COV_PCT=$(grep -E '^TOTAL' "$COV_REPORT_OUT" | awk '{print $NF}' | tr -d '%')
