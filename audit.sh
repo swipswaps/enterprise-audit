@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise Audit Tool (v49.0)
+# Enterprise Audit Tool (v50.0)
 # ==============================================================================
 # Invariants: I1–I4. No `sed`. No `2>/dev/null`. No `>/dev/null`.
 #
@@ -21,7 +21,6 @@ set -uo pipefail
 
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/$(basename "${BASH_SOURCE[0]:-$0}")"
 
-# No stdout leak: capture command -v output inside a substitution.
 run_with_timeout() {
     local duration="$1"; shift
     if [ -n "$(command -v timeout)" ]; then
@@ -262,9 +261,10 @@ trap cleanup EXIT
 log_info()  { echo "[INFO] $(date +%H:%M:%S) $*"; }
 log_warn()  { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
+log_hint()  { echo "[HINT] $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v49.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v50.0)                    "
 log_info "================================================================================"
 log_info "Date: $(date)  Directory: $(pwd)"
 log_info "Log: $LOG_FILE  Coverage floor: ${MIN_COVERAGE_THRESHOLD}%"
@@ -423,6 +423,10 @@ if [ -f .gitignore ]; then echo "  [HYGIENE OK] .gitignore present."; else echo 
 log_info ">>> [6/6] UNIT TESTS & COVERAGE"
 TEST_STATE="skip"
 TESTS_FOUND=false
+HAS_PYTEST=false
+HAS_COV=false
+COV_FAILED=false
+
 if [ -d tests ] || [ -d test ]; then
     TESTS_FOUND=true
 elif find . \( -name "test_*.py" -o -name "*_test.py" \) \
@@ -441,8 +445,6 @@ else
     export MOCK_HARDWARE=1
     export SERIAL_PORT="MOCK"
 
-    HAS_PYTEST=false
-    HAS_COV=false
     [ "${AUDIT_FORCE_NO_PYTEST:-0}" != "1" ] && python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('pytest') else 1)" && HAS_PYTEST=true
     [ "${AUDIT_FORCE_NO_COV:-0}"    != "1" ] && python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('pytest_cov') else 1)" && HAS_COV=true
 
@@ -515,6 +517,7 @@ PYEOF
                 fi
                 log_warn "Coverage below the ${MIN_COVERAGE_THRESHOLD}% floor."
                 TEST_STATE="fail"
+                COV_FAILED=true
                 ;;
         esac
 
@@ -597,6 +600,60 @@ elif [ "$TEST_STATE" = "fail_policy" ]; then
 else
     log_error "AUDIT VERDICT: FAIL    (report: $LOG_FILE)"
 fi
+log_info "================================================================================"
+
+# ------------------------------------------------------------------------------
+# REMEDIATION HINTS — actionable next steps, selected from the audit's own state
+# ------------------------------------------------------------------------------
+log_info "================================================================================"
+log_info "REMEDIATION HINTS"
+log_info "================================================================================"
+ANY_HINT=false
+
+if [ "$TEST_STATE" = "fail" ] && [ "$COV_FAILED" = "true" ]; then
+    log_hint "Coverage is below MIN_COVERAGE_THRESHOLD (${MIN_COVERAGE_THRESHOLD}%)."
+    log_hint "  Fix: add tests to exercise the uncovered lines (see the term-missing"
+    log_hint "       report above), or raise MIN_COVERAGE_THRESHOLD if the floor is wrong."
+    ANY_HINT=true
+fi
+
+if [ "$TEST_STATE" = "fail" ] && [ "$COV_FAILED" != "true" ]; then
+    log_hint "One or more test cases fail. The traceback above shows the exact"
+    log_hint "  file, line, and assertion. Fix the code or the test, then re-run"
+    log_hint "  ./audit.sh to verify."
+    ANY_HINT=true
+fi
+
+if [ "$TEST_STATE" = "fail_policy" ]; then
+    log_hint "AUDIT_REQUIRE_TESTS=1 but no runnable test suite was found."
+    log_hint "  Fix: add a tests/ directory with test_*.py files, or set"
+    log_hint "       AUDIT_REQUIRE_TESTS=0 to disable this policy."
+    ANY_HINT=true
+fi
+
+if [ "$TEST_STATE" = "skip" ] && [ "$TESTS_FOUND" = "false" ]; then
+    log_hint "No test files were found. The audit skipped execution."
+    log_hint "  Fix: add tests/test_*.py (or *_test.py) with unittest.TestCase"
+    log_hint "       subclasses or pytest-style test functions."
+    ANY_HINT=true
+fi
+
+if [ "$HAS_PYTEST" = "false" ] && [ "${AUDIT_FORCE_NO_PYTEST:-0}" != "1" ]; then
+    log_hint "pytest is not installed; the audit used the unittest fallback."
+    log_hint "  Fix: pip install pytest"
+    ANY_HINT=true
+fi
+
+if [ "$HAS_COV" = "false" ] && [ "${AUDIT_FORCE_NO_COV:-0}" != "1" ]; then
+    log_hint "pytest-cov is not installed; coverage gating is disabled."
+    log_hint "  Fix: pip install pytest-cov"
+    ANY_HINT=true
+fi
+
+if [ "$FINAL_STATUS" -eq 0 ] && [ "$ANY_HINT" = "false" ]; then
+    log_hint "No action required. All checks passed."
+fi
+
 log_info "================================================================================"
 
 exit "$FINAL_STATUS"
