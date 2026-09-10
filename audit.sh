@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise Audit Tool (v47.0)
+# Enterprise Audit Tool (v48.0)
 # ==============================================================================
 # Invariants: I1–I4. No `sed`. No `2>/dev/null`. No `>/dev/null`.
 #
@@ -38,10 +38,14 @@ grep_py() {
 run_self_test() {
     local OK_N=0 BAD_N=0 SKIP_N=0
     BASE="$(mktemp -d -t audit_selftest.XXXXXX || mktemp -d)"
+    SELFTEST_REPORTS="$(pwd)/selftest_reports"
+    rm -rf "$SELFTEST_REPORTS"
+    mkdir -p "$SELFTEST_REPORTS"
     trap 'rm -rf "${BASE:-}"; rm -f ./.coverage ./.coverage.*' EXIT
 
     echo "================================================================================"
     echo "  SELF-TEST — verdict must match ground truth (I1–I4). Base: $BASE"
+    echo "  Reports preserved in: $SELFTEST_REPORTS"
     echo "================================================================================"
 
     run_case() {
@@ -49,7 +53,12 @@ run_self_test() {
         local out rc verdict ok="OK"
         local env_args=()
         for arg in "$@"; do env_args+=("$arg"); done
+        # Persistent log per case (paths printed by the audit remain valid after run)
+        local slug report_path
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_')"
+        report_path="$SELFTEST_REPORTS/${slug}.txt"
         out="$(cd "$dir" && env AUDIT_SKIP_PULL=1 AUDIT_FORCE_NO_COV=1 \
+               LOG_FILE="$report_path" \
                "${env_args[@]}" bash "$SCRIPT_PATH" 2>&1)"
         rc=$?
         verdict="$(printf '%s\n' "$out" | grep -oE 'AUDIT VERDICT:.*' | head -n1)"
@@ -104,8 +113,6 @@ class TestBroken(unittest.TestCase):
     def test_broken(self):
         self.assertEqual(1 + 1, 3)
 FAILEOF
-    # Pattern deliberately has no trailing space and no suffix so it matches
-    # ONLY the defect verdict, not POLICY_FAIL.
     run_case "B real failing suite -> FAIL rc=1" "$d" 1 'VERDICT: FAIL'
 
     d="$BASE/C_skip"; mkdir -p "$d/tests"
@@ -118,8 +125,6 @@ CONFEOF
     cat > "$d/tests/conftest.py" <<'CONF2EOF'
 # conftest only
 CONF2EOF
-    # Policy violation: no runnable suite + REQUIRE_TESTS=1.
-    # Expected: rc=3 (distinct from defect rc=1) and verdict POLICY_FAIL.
     run_case "C2 no-tests + REQUIRE_TESTS=1 -> POLICY_FAIL rc=3" "$d" 3 'VERDICT: POLICY_FAIL' \
         AUDIT_REQUIRE_TESTS=1
 
@@ -193,7 +198,6 @@ import mymod
 def test_only_covered():
     assert mymod.covered() == 1
 CTESTEOF
-        # Coverage failure is a defect (rc=1) not a policy (rc=3).
         run_case "G coverage below floor -> FAIL rc=1" "$d" 1 'Below the .* floor' \
             AUDIT_FORCE_NO_COV=0 COV_TARGET=mymod MIN_COVERAGE_THRESHOLD=70
     else
@@ -212,6 +216,7 @@ CTESTEOF
 
     echo "--------------------------------------------------------------------------------"
     printf '  SELF-TEST TOTAL: %d ok, %d bad, %d skipped\n' "$OK_N" "$BAD_N" "$SKIP_N"
+    echo "  Reports preserved in: $SELFTEST_REPORTS"
     echo "================================================================================"
     [ "$BAD_N" -eq 0 ]
 }
@@ -255,7 +260,7 @@ log_warn()  { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v47.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v48.0)                    "
 log_info "================================================================================"
 log_info "Date: $(date)  Directory: $(pwd)"
 log_info "Log: $LOG_FILE  Coverage floor: ${MIN_COVERAGE_THRESHOLD}%"
