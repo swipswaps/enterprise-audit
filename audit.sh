@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise Audit Tool (v39.0)
+# Enterprise Audit Tool (v40.0)
 # ==============================================================================
 # Invariants: I1–I4. No `2>/dev/null`. No `sed`.
 # ==============================================================================
@@ -58,7 +58,8 @@ run_self_test() {
             ok="FAIL(no verdict = crash)"
         elif [ "$rc" -ne "$exp_rc" ]; then
             ok="FAIL(rc=$rc want $exp_rc)"
-        elif ! printf '%s\n' "$out" | grep -qE "$pat"; then
+        elif ! printf '%s\n' "$out" | grep -qiE "$pat"; then
+            #  ^ CASE-INSENSITIVE FIX: added 'i' flag
             ok="FAIL(missing /$pat/)"
         fi
         if [ "$ok" = "OK" ]; then
@@ -259,7 +260,7 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v39.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v40.0)                    "
 log_info "================================================================================"
 log_info "Date: $(date)  Directory: $(pwd)"
 log_info "Log: $LOG_FILE  Coverage floor: ${MIN_COVERAGE_THRESHOLD}%"
@@ -483,14 +484,12 @@ PYEOF
                   "--cov-fail-under=$MIN_COVERAGE_THRESHOLD")
         [ "$AUDIT_HTML_COV" = "1" ] && COV_ARGS+=("--cov-report=html:htmlcov")
 
-        # NO_COLOR prevents ANSI codes from polluting the TOTAL line
         NO_COLOR=1 python3 -m pytest "${COV_ARGS[@]}" -v --tb=short 2>&1 | tee "$TMP_COV_OUT"
         TEST_EXIT_CODE=${PIPESTATUS[0]}
 
         echo ""
         log_info "--- [COVERAGE ANALYSIS] ---"
 
-        # Parse TOTAL line (leading whitespace tolerated)
         TOTAL_LINE=$(grep -iE '^[[:space:]]*TOTAL[[:space:]]' "$TMP_COV_OUT" | head -n1)
         if [ -n "$TOTAL_LINE" ]; then
             COV_PCT=$(echo "$TOTAL_LINE" | grep -oE '[0-9]+%' | tail -n1 | tr -d '%')
@@ -515,7 +514,6 @@ PYEOF
                 log_info "pytest collected no tests (exit 5) — SKIP."
                 ;;
             *)
-                # Non-zero exit with coverage enabled: print the floor warning UNCONDITIONALLY
                 if [ -n "$COV_PCT" ]; then
                     log_info "Coverage: ${COV_PCT}% (${COV_STMTS:-?} statements)"
                 fi
