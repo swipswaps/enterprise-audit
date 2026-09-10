@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise Audit Tool (v44.0)
+# Enterprise Audit Tool (v45.0)
 # ==============================================================================
 # Invariants: I1–I4. No `sed`. No `2>/dev/null`. No `>/dev/null`.
+# Probes are silent — no spurious Python tracebacks on the happy path.
 # ==============================================================================
 
 if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]; then
@@ -65,9 +66,10 @@ run_self_test() {
         fi
     }
 
+    # --- ensure_pytest_cov: boolean probe, no traceback, no redirection ---
     ensure_pytest_cov() {
         local venv_dir="$1"
-        if python3 -c "import pytest, pytest_cov"; then
+        if python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('pytest') and importlib.util.find_spec('pytest_cov') else 1)"; then
             echo "  [INFO] pytest-cov available in system Python."; return 0
         fi
         echo "  [INFO] pytest-cov not found – creating temporary venv..."
@@ -244,7 +246,7 @@ log_warn()  { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v44.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v45.0)                    "
 log_info "================================================================================"
 log_info "Date: $(date)  Directory: $(pwd)"
 log_info "Log: $LOG_FILE  Coverage floor: ${MIN_COVERAGE_THRESHOLD}%"
