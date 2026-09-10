@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise Audit Tool (v40.0)
+# Enterprise Audit Tool (v41.0)
 # ==============================================================================
 # Invariants: I1–I4. No `2>/dev/null`. No `sed`.
 # ==============================================================================
@@ -17,12 +17,8 @@ SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/$(basename "${BAS
 
 run_with_timeout() {
     local duration="$1"; shift
-    if command -v timeout; then
-        timeout "$duration" "$@"
-    else
-        echo "[WARNING] 'timeout' not found; running without time limit." >&2
-        "$@"
-    fi
+    if command -v timeout; then timeout "$duration" "$@"
+    else echo "[WARNING] 'timeout' not found; running without time limit." >&2; "$@"; fi
 }
 
 grep_py() {
@@ -33,13 +29,12 @@ grep_py() {
         -print0 2>/dev/null | xargs -0 grep -n "$pattern" "$@" 2>/dev/null
 }
 
-# ==============================================================================
-# SELF-TEST
-# ==============================================================================
 run_self_test() {
-    local BASE PASS_N=0 FAIL_N=0 SKIP_N=0
+    local PASS_N=0 FAIL_N=0 SKIP_N=0
+    # NOTE: BASE is intentionally global so the EXIT trap can still see it.
+    # The trap uses ${BASE:-} as extra insurance against set -u.
     BASE="$(mktemp -d -t audit_selftest.XXXXXX || mktemp -d)"
-    trap 'rm -rf "$BASE"; rm -f ./.coverage ./.coverage.*' EXIT
+    trap 'rm -rf "${BASE:-}"; rm -f ./.coverage ./.coverage.*' EXIT
 
     echo "================================================================================"
     echo "  SELF-TEST — verdict must match ground truth (I1–I4). Base: $BASE"
@@ -59,7 +54,6 @@ run_self_test() {
         elif [ "$rc" -ne "$exp_rc" ]; then
             ok="FAIL(rc=$rc want $exp_rc)"
         elif ! printf '%s\n' "$out" | grep -qiE "$pat"; then
-            #  ^ CASE-INSENSITIVE FIX: added 'i' flag
             ok="FAIL(missing /$pat/)"
         fi
         if [ "$ok" = "OK" ]; then
@@ -76,8 +70,7 @@ run_self_test() {
     ensure_pytest_cov() {
         local venv_dir="$1"
         if python3 -c "import pytest, pytest_cov" 2>/dev/null; then
-            echo "  [INFO] pytest-cov available in system Python."
-            return 0
+            echo "  [INFO] pytest-cov available in system Python."; return 0
         fi
         echo "  [INFO] pytest-cov not found – creating temporary venv..."
         python3 -m venv "$venv_dir" || return 1
@@ -169,7 +162,6 @@ F3EOF
     run_case "F3 no pytest -> fallback PASS" "$d" 0 'VERDICT: PASS' \
         AUDIT_FORCE_NO_PYTEST=1
 
-    # ---- G: coverage below floor ----
     COV_VENV="$BASE/venv_cov"
     if ensure_pytest_cov "$COV_VENV"; then
         [ -d "$COV_VENV/bin" ] && export PATH="$COV_VENV/bin:$PATH"
@@ -215,9 +207,6 @@ CTESTEOF
     [ "$FAIL_N" -eq 0 ]
 }
 
-# ==============================================================================
-# CLI ARGS
-# ==============================================================================
 AUDIT_DRY_RUN=0
 if [ $# -gt 0 ]; then
     case "$1" in
@@ -226,9 +215,6 @@ if [ $# -gt 0 ]; then
     esac
 fi
 
-# ==============================================================================
-# MAIN AUDIT
-# ==============================================================================
 STASHED=false
 FINAL_STATUS=0
 LOG_FILE="${LOG_FILE:-repo_audit_$(date +%Y%m%d_%H%M%S).txt}"
@@ -255,28 +241,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
-log_info() { echo "[INFO] $(date +%H:%M:%S) $*"; }
-log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
+log_info()  { echo "[INFO] $(date +%H:%M:%S) $*"; }
+log_warn()  { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v40.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v41.0)                    "
 log_info "================================================================================"
 log_info "Date: $(date)  Directory: $(pwd)"
 log_info "Log: $LOG_FILE  Coverage floor: ${MIN_COVERAGE_THRESHOLD}%"
 log_info "================================================================================"
 
-# ---- 1. GIT ----
 log_info ">>> [1/6] GIT WORKING TREE PREPARATION"
 export GIT_TERMINAL_PROMPT=0
 if [ "${AUDIT_FORCE_NO_GIT:-0}" != "1" ] && git rev-parse --is-inside-work-tree; then
     CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD || echo '')"
     HEAD_OK=false
     git rev-parse --verify -q HEAD && HEAD_OK=true
-    DETACHED=false
-    [ "$CURRENT_BRANCH" = "HEAD" ] && DETACHED=true
-    UNBORN=false
-    [ "$HEAD_OK" = false ] && UNBORN=true
+    DETACHED=false; [ "$CURRENT_BRANCH" = "HEAD" ] && DETACHED=true
+    UNBORN=false; [ "$HEAD_OK" = false ] && UNBORN=true
 
     if [ "${CI:-}" = "true" ] || [ "$DETACHED" = true ] || [ "$AUDIT_SKIP_PULL" = "1" ] || [ "$AUDIT_DRY_RUN" = "1" ]; then
         log_info "Skipping pull (CI=${CI:-unset} detached=$DETACHED skip=$AUDIT_SKIP_PULL dry=$AUDIT_DRY_RUN)"
@@ -308,7 +291,6 @@ else
     log_info "Not inside a git repository (or force-no-git)."
 fi
 
-# ---- 2. SYNTAX & LINTING ----
 log_info ">>> [2/6] PYTHON CODE LINTING & SYNTAX ANALYSIS"
 log_info "--- [2A] py_compile ---"
 if command -v python3; then
@@ -352,7 +334,6 @@ if flagged == 0: print('  [OK] No Python file exceeds 400 lines.')
 PYEOF
 fi
 
-# ---- 3. SECURITY ----
 log_info ">>> [3/6] LOGIC, SECURITY & HARDCODED CREDENTIALS"
 log_info "--- [3A] Secrets / hardcoded paths ---"
 grep_py -E "(api_key[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9_-]{8,}['\"]|secret[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9_-]{8,}['\"]|bearer[[:space:]]+[a-zA-Z0-9._-]+|/home/[a-zA-Z0-9_-]+|C:\\\\Users\\\\[a-zA-Z0-9_-]+)" | \
@@ -382,7 +363,6 @@ if flagged == 0: print('  [OK] No mutable default arguments detected.')
 PYEOF
 fi
 
-# ---- 4. UX ----
 log_info ">>> [4/6] UX & CLI FEEDBACK AUDIT"
 log_info "--- [4A] Blocking input / abrupt exits ---"
 grep_py -E "(input[[:space:]]*\(|sys\.exit[[:space:]]*\(|os\._exit[[:space:]]*\()" | \
@@ -410,7 +390,6 @@ else
     echo "  [INFO] curl not installed; skipping URL checks."
 fi
 
-# ---- 5. HYGIENE ----
 log_info ">>> [5/6] REPOSITORY METRICS & HYGIENE"
 BIG="$(run_with_timeout 30 find . -type f -size +1M -not -path "*/.git/*" -not -path "*/venv/*" -not -path "*/.venv/*" -not -path "*/node_modules/*")"
 if [ -n "${BIG:-}" ]; then
@@ -422,9 +401,7 @@ else
 fi
 if [ -f .gitignore ]; then echo "  [HYGIENE OK] .gitignore present."; else echo "  [HYGIENE WARNING] No .gitignore."; fi
 
-# ---- 6. TESTS & COVERAGE ----
 log_info ">>> [6/6] UNIT TESTS & COVERAGE"
-
 TEST_STATE="skip"
 TESTS_FOUND=false
 if [ -d tests ] || [ -d test ]; then
