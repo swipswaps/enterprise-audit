@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise Audit Tool (v42.0)
+# Enterprise Audit Tool (v44.0)
 # ==============================================================================
-# Invariants: I1–I4. No `2>/dev/null`. No `sed`.
+# Invariants: I1–I4. No `sed`. No `2>/dev/null`. No `>/dev/null`.
 # ==============================================================================
 
 if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]; then
@@ -26,7 +26,7 @@ grep_py() {
     find . -type f -name "*.py" \
         -not -path "*/.git/*" -not -path "*/venv/*" -not -path "*/.venv/*" \
         -not -path "*/node_modules/*" -not -path "*/__pycache__/*" \
-        -print0 2>/dev/null | xargs -0 grep -n "$pattern" "$@" 2>/dev/null
+        -print0 | xargs -0 grep -n "$pattern" "$@"
 }
 
 run_self_test() {
@@ -67,7 +67,7 @@ run_self_test() {
 
     ensure_pytest_cov() {
         local venv_dir="$1"
-        if python3 -c "import pytest, pytest_cov" 2>/dev/null; then
+        if python3 -c "import pytest, pytest_cov"; then
             echo "  [INFO] pytest-cov available in system Python."; return 0
         fi
         echo "  [INFO] pytest-cov not found – creating temporary venv..."
@@ -244,7 +244,7 @@ log_warn()  { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v42.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v44.0)                    "
 log_info "================================================================================"
 log_info "Date: $(date)  Directory: $(pwd)"
 log_info "Log: $LOG_FILE  Coverage floor: ${MIN_COVERAGE_THRESHOLD}%"
