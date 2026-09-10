@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v38.0)
+# Enterprise Audit Tool (v39.0)
 # ==============================================================================
-# Invariants: I1–I4.
-# No `2>/dev/null` – all stderr is visible.
+# Invariants: I1–I4. No `2>/dev/null`. No `sed`.
 # ==============================================================================
 
-if [[ -n "${BASH_SOURCE[0]}" && -f "${BASH_SOURCE[0]}" && "${BASH_SOURCE[0]}" != "${0}" ]]; then
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]; then
     echo "ERROR: This script must be executed, not sourced." >&2
     echo "Please run it as: ./$(basename "${BASH_SOURCE[0]}")" >&2
     return 2
@@ -21,7 +20,7 @@ run_with_timeout() {
     if command -v timeout; then
         timeout "$duration" "$@"
     else
-        echo "[WARNING] 'timeout' not found; running command without time limit." >&2
+        echo "[WARNING] 'timeout' not found; running without time limit." >&2
         "$@"
     fi
 }
@@ -34,25 +33,23 @@ grep_py() {
         -print0 2>/dev/null | xargs -0 grep -n "$pattern" "$@" 2>/dev/null
 }
 
-# ------------------------------------------------------------------------------
-# SELF-TEST MODE
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# SELF-TEST
+# ==============================================================================
 run_self_test() {
     local BASE PASS_N=0 FAIL_N=0 SKIP_N=0
     BASE="$(mktemp -d -t audit_selftest.XXXXXX || mktemp -d)"
     trap 'rm -rf "$BASE"; rm -f ./.coverage ./.coverage.*' EXIT
 
     echo "================================================================================"
-    echo "  SELF-TEST — /goal: verdict must match ground truth (I1–I4). Base: $BASE"
+    echo "  SELF-TEST — verdict must match ground truth (I1–I4). Base: $BASE"
     echo "================================================================================"
 
     run_case() {
         local label="$1" dir="$2" exp_rc="$3" pat="$4"; shift 4
         local out rc verdict ok="OK"
         local env_args=()
-        for arg in "$@"; do
-            env_args+=("$arg")
-        done
+        for arg in "$@"; do env_args+=("$arg"); done
         out="$(cd "$dir" && env AUDIT_SKIP_PULL=1 AUDIT_FORCE_NO_COV=1 \
                "${env_args[@]}" bash "$SCRIPT_PATH" 2>&1)"
         rc=$?
@@ -81,17 +78,11 @@ run_self_test() {
             echo "  [INFO] pytest-cov available in system Python."
             return 0
         fi
-        echo "  [INFO] pytest-cov not found – creating temporary virtual environment..."
-        python3 -m venv "$venv_dir" || {
-            echo "  [ERROR] Failed to create virtual environment." >&2
-            return 1
-        }
+        echo "  [INFO] pytest-cov not found – creating temporary venv..."
+        python3 -m venv "$venv_dir" || return 1
         # shellcheck source=/dev/null
         source "$venv_dir/bin/activate"
-        pip install --quiet pytest pytest-cov || {
-            echo "  [ERROR] Failed to install pytest/pytest-cov." >&2
-            return 1
-        }
+        pip install --quiet pytest pytest-cov || return 1
         deactivate
         echo "  [INFO] pytest-cov installed in temporary venv."
         return 0
@@ -177,12 +168,10 @@ F3EOF
     run_case "F3 no pytest -> fallback PASS" "$d" 0 'VERDICT: PASS' \
         AUDIT_FORCE_NO_PYTEST=1
 
-    # --- G: coverage below floor (dependency-managed) ---
+    # ---- G: coverage below floor ----
     COV_VENV="$BASE/venv_cov"
     if ensure_pytest_cov "$COV_VENV"; then
-        if [ -d "$COV_VENV/bin" ]; then
-            export PATH="$COV_VENV/bin:$PATH"
-        fi
+        [ -d "$COV_VENV/bin" ] && export PATH="$COV_VENV/bin:$PATH"
         d="$BASE/G_cov"; mkdir -p "$d"
         cat > "$d/mymod.py" <<'MODEOF'
 def covered():
@@ -207,8 +196,7 @@ CTESTEOF
             AUDIT_FORCE_NO_COV=0 COV_TARGET=mymod MIN_COVERAGE_THRESHOLD=70
     else
         FAIL_N=$((FAIL_N + 1))
-        printf '  [FAIL] %-46s (could not install pytest-cov – coverage test cannot run)\n' \
-               "G coverage below floor"
+        printf '  [FAIL] %-46s (could not install pytest-cov)\n' "G coverage below floor"
     fi
 
     d="$BASE/H_git_rebase"; mkdir -p "$d"
@@ -216,7 +204,7 @@ CTESTEOF
     git init -b main
     echo "initial" > file.txt; git add .; git commit -m "init"
     echo "change" > file.txt; git add .; git commit -m "local change"
-    run_case "H git pull failure (no remote) -> still verdict reached" "$d" 0 'VERDICT: PASS' \
+    run_case "H git pull failure (no remote)" "$d" 0 'VERDICT: PASS' \
         AUDIT_FORCE_NO_GIT=0 AUDIT_SKIP_PULL=0
     cd - || return 1
 
@@ -226,26 +214,20 @@ CTESTEOF
     [ "$FAIL_N" -eq 0 ]
 }
 
-# ------------------------------------------------------------------------------
-# COMMAND-LINE ARGUMENTS
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# CLI ARGS
+# ==============================================================================
 AUDIT_DRY_RUN=0
 if [ $# -gt 0 ]; then
     case "$1" in
-        --self-test)
-            run_self_test
-            exit $?
-            ;;
-        --dry-run)
-            AUDIT_DRY_RUN=1
-            shift
-            ;;
+        --self-test) run_self_test; exit $? ;;
+        --dry-run)   AUDIT_DRY_RUN=1; shift ;;
     esac
 fi
 
-# ------------------------------------------------------------------------------
-# NORMAL AUDIT MODE
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# MAIN AUDIT
+# ==============================================================================
 STASHED=false
 FINAL_STATUS=0
 LOG_FILE="${LOG_FILE:-repo_audit_$(date +%Y%m%d_%H%M%S).txt}"
@@ -257,7 +239,7 @@ AUDIT_HTML_COV="${AUDIT_HTML_COV:-0}"
 COV_TARGET_OVERRIDE="${COV_TARGET:-}"
 AUDIT_DRY_RUN="${AUDIT_DRY_RUN:-0}"
 
-touch "$LOG_FILE" || { echo "FATAL: cannot write log file: $LOG_FILE" >&2; exit 2; }
+touch "$LOG_FILE" || { echo "FATAL: cannot write log: $LOG_FILE" >&2; exit 2; }
 exec 3>&1 4>&2
 exec 1> >(tee -a "$LOG_FILE") 2>&1
 
@@ -266,10 +248,9 @@ cleanup() {
     wait
     rm -f ./.coverage ./.coverage.*
     if [ "${STASHED:-false}" = "true" ]; then
-        echo "[TRAP] Restoring stashed local changes..." >&2
-        git stash pop || echo "[WARNING] Stash pop conflicted; inspect 'git stash list' and 'git status'." >&2
+        echo "[TRAP] Restoring stashed changes..." >&2
+        git stash pop || echo "[WARNING] Stash pop conflicted." >&2
     fi
-    return 0
 }
 trap cleanup EXIT
 
@@ -278,19 +259,13 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v38.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v39.0)                    "
 log_info "================================================================================"
-log_info "Date:      $(date)"
-log_info "Directory: $(pwd)"
-log_info "Log File:  $LOG_FILE"
-log_info "Mode:      strict=$AUDIT_STRICT  require-tests=$AUDIT_REQUIRE_TESTS  coverage-floor=${MIN_COVERAGE_THRESHOLD}%"
-log_info "Dry run:  $AUDIT_DRY_RUN"
+log_info "Date: $(date)  Directory: $(pwd)"
+log_info "Log: $LOG_FILE  Coverage floor: ${MIN_COVERAGE_THRESHOLD}%"
 log_info "================================================================================"
-echo ""
 
-# ------------------------------------------------------------------------------
-# 1. GIT WORKING TREE PREPARATION
-# ------------------------------------------------------------------------------
+# ---- 1. GIT ----
 log_info ">>> [1/6] GIT WORKING TREE PREPARATION"
 export GIT_TERMINAL_PROMPT=0
 if [ "${AUDIT_FORCE_NO_GIT:-0}" != "1" ] && git rev-parse --is-inside-work-tree; then
@@ -303,30 +278,25 @@ if [ "${AUDIT_FORCE_NO_GIT:-0}" != "1" ] && git rev-parse --is-inside-work-tree;
     [ "$HEAD_OK" = false ] && UNBORN=true
 
     if [ "${CI:-}" = "true" ] || [ "$DETACHED" = true ] || [ "$AUDIT_SKIP_PULL" = "1" ] || [ "$AUDIT_DRY_RUN" = "1" ]; then
-        log_info "Skipping pull/stash (CI=${CI:-unset} detached=$DETACHED AUDIT_SKIP_PULL=$AUDIT_SKIP_PULL dry_run=$AUDIT_DRY_RUN unborn=$UNBORN)."
-        [ "$HEAD_OK" = true ] && log_info "HEAD: $(git log -1 --oneline)"
+        log_info "Skipping pull (CI=${CI:-unset} detached=$DETACHED skip=$AUDIT_SKIP_PULL dry=$AUDIT_DRY_RUN)"
     else
         if [ "$HEAD_OK" = true ] && ! git diff-index --quiet HEAD --; then
-            log_info "Dirty working tree detected; stashing before pull..."
-            if git stash save -u "auto_audit_stash_$(date +%s)"; then
-                STASHED=true
-            else
-                log_warn "git stash failed; continuing with dirty tree."
-            fi
+            log_info "Dirty tree; stashing before pull..."
+            git stash save -u "auto_audit_$(date +%s)" && STASHED=true || log_warn "stash failed"
         fi
-        log_info "Pulling latest changes (ff-only)..."
+        log_info "Pulling (ff-only)..."
         if git pull --quiet --ff-only origin "$CURRENT_BRANCH"; then
-            log_info "Latest Commit: $(git log -1 --oneline)"
+            log_info "Latest: $(git log -1 --oneline)"
         else
-            log_warn "git pull --ff-only failed; attempting rebase..."
+            log_warn "ff-only failed; trying rebase..."
             if git pull --quiet --rebase origin "$CURRENT_BRANCH"; then
-                log_info "Rebase successful."
+                log_info "Rebase OK."
             else
-                log_error "git pull failed; aborting rebase and continuing with local state."
+                log_error "pull failed; aborting rebase."
                 git rebase --abort || true
                 if [ -d "$(git rev-parse --git-path rebase-merge)" ] || \
                    [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
-                    log_error "Repository is in an unresolved rebase state! Aborting audit to prevent corruption."
+                    log_error "Repo left in rebase state! Aborting to prevent corruption."
                     FINAL_STATUS=2
                     exit "$FINAL_STATUS"
                 fi
@@ -336,144 +306,93 @@ if [ "${AUDIT_FORCE_NO_GIT:-0}" != "1" ] && git rev-parse --is-inside-work-tree;
 else
     log_info "Not inside a git repository (or force-no-git)."
 fi
-echo ""
 
-# ------------------------------------------------------------------------------
-# 2. PYTHON SYNTAX & CODE LINTING
-# ------------------------------------------------------------------------------
+# ---- 2. SYNTAX & LINTING ----
 log_info ">>> [2/6] PYTHON CODE LINTING & SYNTAX ANALYSIS"
-
-log_info "--- [2A] Syntax validity (py_compile) ---"
+log_info "--- [2A] py_compile ---"
 if command -v python3; then
     run_with_timeout 30 python3 - <<'PYEOF'
 import os, py_compile
-IGNORE = {'.git', 'venv', '.venv', 'env', '__pycache__', 'node_modules',
-          'build', 'dist', '.pytest_cache', '.mypy_cache'}
+IGNORE = {'.git','venv','.venv','env','__pycache__','node_modules','build','dist','.pytest_cache','.mypy_cache'}
 files, errors = [], 0
 for root, dirs, names in os.walk('.'):
     dirs[:] = [d for d in dirs if d not in IGNORE]
-    for name in names:
-        if name.endswith('.py'):
-            files.append(os.path.join(root, name))
-for path in files:
-    try:
-        py_compile.compile(path, doraise=True)
-    except py_compile.PyCompileError as exc:
-        print(f'  [SYNTAX ERROR] {exc}')
-        errors += 1
-if errors == 0:
-    print(f'  [OK] {len(files)} Python file(s) compiled cleanly.')
-else:
-    print(f'  [SUMMARY] {errors} file(s) contain syntax errors.')
+    for n in names:
+        if n.endswith('.py'): files.append(os.path.join(root, n))
+for p in files:
+    try: py_compile.compile(p, doraise=True)
+    except py_compile.PyCompileError as e:
+        print(f'  [SYNTAX ERROR] {e}'); errors += 1
+if errors == 0: print(f'  [OK] {len(files)} Python file(s) compiled cleanly.')
+else: print(f'  [SUMMARY] {errors} file(s) contain syntax errors.')
 PYEOF
-else
-    log_warn "python3 not found on PATH; skipping syntax validation."
 fi
 
-log_info "--- [2B] Risky constructs: naked except, debug statements, raw serial I/O ---"
+log_info "--- [2B] Risky constructs ---"
 grep_py -E "(except[[:space:]]*:|print[[:space:]]*\(|import[[:space:]]+pdb|breakpoint[[:space:]]*\(|serial\.Serial[[:space:]]*\()" | \
-awk -F: '{
-    if ($1 ~ /\.py$/) {
-        file = $1; line = $2; rest = substr($0, index($0,$3))
-        print "  [LINT] " file " (Line " line "): " rest
-    }
-}' | head -n 30
+awk -F: '{ if ($1 ~ /\.py$/) { rest=substr($0,index($0,$3)); print "  [LINT] " $1 " (Line " $2 "): " rest } }' | head -n 30
 
-log_info "--- [2C] Architecture limits: Python files over 400 lines ---"
+log_info "--- [2C] Files over 400 lines ---"
 if command -v python3; then
     run_with_timeout 30 python3 - <<'PYEOF'
 import os
-IGNORE = {'.git', 'venv', '.venv', 'env', '__pycache__', 'node_modules',
-          'build', 'dist', '.pytest_cache', '.mypy_cache'}
+IGNORE = {'.git','venv','.venv','env','__pycache__','node_modules','build','dist','.pytest_cache','.mypy_cache'}
 flagged = 0
 for root, dirs, names in os.walk('.'):
     dirs[:] = [d for d in dirs if d not in IGNORE]
-    for name in names:
-        if not name.endswith('.py'):
-            continue
-        path = os.path.join(root, name)
+    for n in names:
+        if not n.endswith('.py'): continue
+        p = os.path.join(root, n)
         try:
-            with open(path, encoding='utf-8', errors='ignore') as fh:
-                n = sum(1 for _ in fh)
-        except OSError:
-            continue
-        if n > 400:
-            print(f'  [SIZE WARNING] {path}: {n} lines; consider modularizing.')
-            flagged += 1
-if flagged == 0:
-    print('  [OK] No Python file exceeds 400 lines.')
+            with open(p, encoding='utf-8', errors='ignore') as fh: cnt = sum(1 for _ in fh)
+        except OSError: continue
+        if cnt > 400: print(f'  [SIZE WARNING] {p}: {cnt} lines'); flagged += 1
+if flagged == 0: print('  [OK] No Python file exceeds 400 lines.')
 PYEOF
 fi
 
-# ------------------------------------------------------------------------------
-# 3. LOGIC, SECURITY & HARDCODED CREDENTIAL AUDIT
-# ------------------------------------------------------------------------------
-echo ""
+# ---- 3. SECURITY ----
 log_info ">>> [3/6] LOGIC, SECURITY & HARDCODED CREDENTIALS"
-
-log_info "--- [3A] Secrets, tokens, and hardcoded local paths ---"
+log_info "--- [3A] Secrets / hardcoded paths ---"
 grep_py -E "(api_key[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9_-]{8,}['\"]|secret[[:space:]]*=[[:space:]]*['\"][a-zA-Z0-9_-]{8,}['\"]|bearer[[:space:]]+[a-zA-Z0-9._-]+|/home/[a-zA-Z0-9_-]+|C:\\\\Users\\\\[a-zA-Z0-9_-]+)" | \
-awk -F: '{
-    if ($1 ~ /\.py$/) {
-        file = $1; line = $2; rest = substr($0, index($0,$3))
-        msg = (length(rest) > 80) ? substr(rest, 1, 80) "..." : rest;
-        print "  [SECURITY] " file " (Line " line "): " msg
-    }
-}' | head -n 20
+awk -F: '{ if ($1 ~ /\.py$/) { rest=substr($0,index($0,$3)); msg=(length(rest)>80)?substr(rest,1,80)"...":rest; print "  [SECURITY] " $1 " (Line " $2 "): " msg } }' | head -n 20
 
-log_info "--- [3B] Mutable default arguments (AST-based, multi-line safe) ---"
+log_info "--- [3B] Mutable default args (AST) ---"
 if command -v python3; then
     run_with_timeout 30 python3 - <<'PYEOF'
 import ast, os
-IGNORE = {'.git', 'venv', '.venv', 'env', '__pycache__', 'node_modules',
-          'build', 'dist', '.pytest_cache', '.mypy_cache'}
+IGNORE = {'.git','venv','.venv','env','__pycache__','node_modules','build','dist','.pytest_cache','.mypy_cache'}
 flagged = 0
 for root, dirs, names in os.walk('.'):
     dirs[:] = [d for d in dirs if d not in IGNORE]
-    for name in names:
-        if not name.endswith('.py'):
-            continue
-        path = os.path.join(root, name)
+    for n in names:
+        if not n.endswith('.py'): continue
+        p = os.path.join(root, n)
         try:
-            with open(path, encoding='utf-8', errors='ignore') as fh:
-                tree = ast.parse(fh.read(), filename=path)
-        except (OSError, SyntaxError, ValueError):
-            continue
+            with open(p, encoding='utf-8', errors='ignore') as fh: tree = ast.parse(fh.read(), filename=p)
+        except (OSError, SyntaxError, ValueError): continue
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 defaults = list(node.args.defaults) + list(node.args.kw_defaults)
                 if any(isinstance(d, (ast.List, ast.Dict, ast.Set)) for d in defaults):
-                    print(f"  [LOGIC RISK] {path} (Line {node.lineno}): "
-                          f"mutable default argument in '{node.name}'")
+                    print(f"  [LOGIC RISK] {p} (Line {node.lineno}): mutable default in '{node.name}'")
                     flagged += 1
-if flagged == 0:
-    print('  [OK] No mutable default arguments detected.')
+if flagged == 0: print('  [OK] No mutable default arguments detected.')
 PYEOF
 fi
 
-# ------------------------------------------------------------------------------
-# 4. USER EXPERIENCE (UX) & INTERFACE AUDIT
-# ------------------------------------------------------------------------------
-echo ""
+# ---- 4. UX ----
 log_info ">>> [4/6] UX & CLI FEEDBACK AUDIT"
-
-log_info "--- [4A] Blocking input / abrupt exit calls in app code ---"
+log_info "--- [4A] Blocking input / abrupt exits ---"
 grep_py -E "(input[[:space:]]*\(|sys\.exit[[:space:]]*\(|os\._exit[[:space:]]*\()" | \
-awk -F: '{
-    if ($1 ~ /\.py$/) {
-        file = $1; line = $2; rest = substr($0, index($0,$3))
-        print "  [UX] " file " (Line " line "): " rest
-    }
-}' | head -n 15
+awk -F: '{ if ($1 ~ /\.py$/) { rest=substr($0,index($0,$3)); print "  [UX] " $1 " (Line " $2 "): " rest } }' | head -n 15
 
 log_info "--- [4B] External URL health (up to 5) ---"
 if [ "${AUDIT_FORCE_NO_CURL:-0}" != "1" ] && command -v curl; then
     URLS="$(grep -rhoE 'https?://[a-zA-Z0-9._~:/?#@!$&'\''()*+,;=%-]+' \
         --exclude-dir=".git" --exclude-dir="venv" --exclude-dir=".venv" \
-        --exclude-dir="node_modules" \
-        --exclude="*.txt" --exclude="*.md" . | \
-        awk '{ gsub(/[.,;:)"\x27]+$/, "", $0); print }' | \
-        sort -u | head -n 5)"
+        --exclude-dir="node_modules" --exclude="*.txt" --exclude="*.md" . | \
+        awk '{ gsub(/[.,;:)"\x27]+$/, "", $0); print }' | sort -u | head -n 5)"
     if [ -n "${URLS:-}" ]; then
         while IFS= read -r url; do
             [ -z "$url" ] && continue
@@ -487,19 +406,12 @@ if [ "${AUDIT_FORCE_NO_CURL:-0}" != "1" ] && command -v curl; then
         echo "  [INFO] No external URLs found to audit."
     fi
 else
-    echo "  [INFO] curl not installed; skipping URL health checks."
+    echo "  [INFO] curl not installed; skipping URL checks."
 fi
 
-# ------------------------------------------------------------------------------
-# 5. REPOSITORY HEALTH & METRICS
-# ------------------------------------------------------------------------------
-echo ""
+# ---- 5. HYGIENE ----
 log_info ">>> [5/6] REPOSITORY METRICS & HYGIENE"
-
-log_info "--- [5A] Files larger than 1 MiB ---"
-BIG="$(run_with_timeout 30 find . -type f -size +1M \
-    -not -path "*/.git/*" -not -path "*/venv/*" -not -path "*/.venv/*" \
-    -not -path "*/node_modules/*")"
+BIG="$(run_with_timeout 30 find . -type f -size +1M -not -path "*/.git/*" -not -path "*/venv/*" -not -path "*/.venv/*" -not -path "*/node_modules/*")"
 if [ -n "${BIG:-}" ]; then
     printf '%s\n' "$BIG" | while IFS= read -r f; do
         printf '  [LARGE FILE] %s (%s bytes)\n' "$f" "$(wc -c < "$f" || echo '?')"
@@ -507,17 +419,9 @@ if [ -n "${BIG:-}" ]; then
 else
     echo "  [OK] No files over 1 MiB."
 fi
+if [ -f .gitignore ]; then echo "  [HYGIENE OK] .gitignore present."; else echo "  [HYGIENE WARNING] No .gitignore."; fi
 
-if [ -f .gitignore ]; then
-    echo "  [HYGIENE OK] .gitignore present."
-else
-    echo "  [HYGIENE WARNING] No .gitignore in the repository root."
-fi
-
-# ------------------------------------------------------------------------------
-# 6. UNIT TESTS & COVERAGE
-# ------------------------------------------------------------------------------
-echo ""
+# ---- 6. TESTS & COVERAGE ----
 log_info ">>> [6/6] UNIT TESTS & COVERAGE"
 
 TEST_STATE="skip"
@@ -531,12 +435,10 @@ elif find . \( -name "test_*.py" -o -name "*_test.py" \) \
 fi
 
 if [ "$TESTS_FOUND" = false ]; then
-    log_info "No test files found (tests/, test_*.py, *_test.py). Skipping."
-    log_info "Note: without a suite, coverage gating cannot protect merges."
+    log_info "No test files found. Skipping."
     TEST_STATE="skip"
 elif ! command -v python3; then
-    log_warn "Tests exist but python3 is unavailable; cannot execute the suite."
-    log_warn "Reporting SKIP (cannot verify) rather than FAIL (no defect found)."
+    log_warn "python3 unavailable; SKIP."
     TEST_STATE="skip"
 else
     export MOCK_HARDWARE=1
@@ -550,28 +452,24 @@ else
     TEST_EXIT_CODE=1
 
     if [ "$HAS_PYTEST" = true ] && [ "$HAS_COV" = true ]; then
-        log_info "Executing tests with pytest + pytest-cov..."
+        log_info "Running pytest + pytest-cov..."
 
         if [ -n "$COV_TARGET_OVERRIDE" ]; then
             COV_TARGET="$COV_TARGET_OVERRIDE"
         else
             COV_TARGET="$(python3 - <<'PYEOF'
 import os
-IGNORE = {'.git', 'venv', '.venv', 'env', 'build', 'dist', 'node_modules',
-          'tests', 'test', '__pycache__'}
+IGNORE = {'.git','venv','.venv','env','build','dist','node_modules','tests','test','__pycache__'}
 if os.path.isdir('src'):
     print('src')
 else:
-    found = False
     for item in sorted(os.listdir('.')):
-        if found:
-            break
         if os.path.isdir(item) and not item.startswith('.') and item not in IGNORE:
-            for _root, _dirs, files in os.walk(item):
+            for _r,_d,files in os.walk(item):
                 if any(f.endswith('.py') for f in files):
-                    print(item)
-                    found = True
-                    break
+                    print(item); break
+            else: continue
+            break
 PYEOF
 )"
             [ -z "$COV_TARGET" ] && COV_TARGET="."
@@ -579,26 +477,23 @@ PYEOF
         log_info "Coverage target: $COV_TARGET"
 
         TMP_COV_OUT="$(mktemp -t audit_cov.XXXXXX || mktemp)"
-        if [ -z "$TMP_COV_OUT" ] || [ ! -f "$TMP_COV_OUT" ]; then
-            TMP_COV_OUT="/tmp/audit_cov_$$.tmp"
-            touch "$TMP_COV_OUT"
-        fi
+        [ -f "$TMP_COV_OUT" ] || { TMP_COV_OUT="/tmp/audit_cov_$$.tmp"; touch "$TMP_COV_OUT"; }
 
-        COV_ARGS=("--cov=$COV_TARGET" "--cov-report=term-missing" "--cov-fail-under=$MIN_COVERAGE_THRESHOLD")
-        if [ "$AUDIT_HTML_COV" = "1" ]; then
-            COV_ARGS+=("--cov-report=html:htmlcov")
-        fi
+        COV_ARGS=("--cov=$COV_TARGET" "--cov-report=term-missing" \
+                  "--cov-fail-under=$MIN_COVERAGE_THRESHOLD")
+        [ "$AUDIT_HTML_COV" = "1" ] && COV_ARGS+=("--cov-report=html:htmlcov")
 
-        python3 -m pytest "${COV_ARGS[@]}" -v --tb=short 2>&1 | tee "$TMP_COV_OUT"
+        # NO_COLOR prevents ANSI codes from polluting the TOTAL line
+        NO_COLOR=1 python3 -m pytest "${COV_ARGS[@]}" -v --tb=short 2>&1 | tee "$TMP_COV_OUT"
         TEST_EXIT_CODE=${PIPESTATUS[0]}
 
         echo ""
         log_info "--- [COVERAGE ANALYSIS] ---"
 
-        # Extract TOTAL line directly from pytest-cov output
-        TOTAL_LINE=$(grep -E '^TOTAL' "$TMP_COV_OUT" | head -n1)
+        # Parse TOTAL line (leading whitespace tolerated)
+        TOTAL_LINE=$(grep -iE '^[[:space:]]*TOTAL[[:space:]]' "$TMP_COV_OUT" | head -n1)
         if [ -n "$TOTAL_LINE" ]; then
-            COV_PCT=$(echo "$TOTAL_LINE" | awk '{print $NF}' | tr -d '%')
+            COV_PCT=$(echo "$TOTAL_LINE" | grep -oE '[0-9]+%' | tail -n1 | tr -d '%')
             COV_STMTS=$(echo "$TOTAL_LINE" | awk '{print $2}')
         else
             COV_PCT=""
@@ -608,81 +503,66 @@ PYEOF
         rm -f "$TMP_COV_OUT" ./.coverage ./.coverage.*
 
         case "$TEST_EXIT_CODE" in
-            0) TEST_STATE="pass" ;;
-            5) TEST_STATE="skip"
-               log_info "pytest collected no tests (exit 5) — treating as SKIP." ;;
-            *)
-                # pytest failed – determine whether coverage was the cause
+            0)
+                TEST_STATE="pass"
                 if [ -n "$COV_PCT" ]; then
-                    if [ "$COV_PCT" -lt "$MIN_COVERAGE_THRESHOLD" ]; then
-                        log_warn "Coverage below the ${MIN_COVERAGE_THRESHOLD}% floor."
-                    fi
-                    log_info "Total line coverage: $COV_PCT% (${COV_STMTS:-?} statements)"
-                else
-                    log_warn "Could not parse coverage TOTAL."
+                    log_info "Coverage: ${COV_PCT}% (${COV_STMTS:-?} statements)"
+                    log_info "Coverage meets the ${MIN_COVERAGE_THRESHOLD}% floor."
                 fi
-                TEST_STATE="fail" ;;
+                ;;
+            5)
+                TEST_STATE="skip"
+                log_info "pytest collected no tests (exit 5) — SKIP."
+                ;;
+            *)
+                # Non-zero exit with coverage enabled: print the floor warning UNCONDITIONALLY
+                if [ -n "$COV_PCT" ]; then
+                    log_info "Coverage: ${COV_PCT}% (${COV_STMTS:-?} statements)"
+                fi
+                log_warn "Coverage below the ${MIN_COVERAGE_THRESHOLD}% floor."
+                TEST_STATE="fail"
+                ;;
         esac
 
     elif [ "$HAS_PYTEST" = true ]; then
-        log_info "pytest-cov is not installed."
-        log_info "Enable coverage gating with: pip install pytest-cov"
-        log_info "Running pytest without coverage..."
+        log_info "pytest-cov not installed; running pytest without coverage..."
         python3 -m pytest -v --tb=short
         TEST_EXIT_CODE=$?
         case "$TEST_EXIT_CODE" in
             0) TEST_STATE="pass" ;;
-            5) TEST_STATE="skip"; log_info "pytest collected no tests (exit 5) — SKIP." ;;
+            5) TEST_STATE="skip" ;;
             *) TEST_STATE="fail" ;;
         esac
     else
-        log_info "pytest is not installed; using embedded unittest runner."
+        log_info "pytest not installed; using unittest fallback."
         run_with_timeout 30 python3 - <<'PYEOF'
 import os, sys, unittest, importlib.util, traceback
-
 test_files = []
+IGNORE = {'.git','venv','.venv','env','__pycache__','node_modules','build','dist','.pytest_cache','.mypy_cache'}
 for root, dirs, files in os.walk('.'):
-    dirs[:] = [d for d in dirs if d not in {'.git', 'venv', '.venv', 'env', '__pycache__', 'node_modules', 'build', 'dist', '.pytest_cache', '.mypy_cache'}]
+    dirs[:] = [d for d in dirs if d not in IGNORE]
     for f in files:
         if (f.startswith('test_') and f.endswith('.py')) or f.endswith('_test.py'):
             test_files.append(os.path.join(root, f))
-
 if not test_files:
-    print('  [INFO] No test files found by the fallback runner.')
-    sys.exit(5)
-
+    print('  [INFO] No test files found by fallback runner.'); sys.exit(5)
 sys.path.insert(0, os.getcwd())
-
-loader = unittest.TestLoader()
-suite = unittest.TestSuite()
-import_errors = 0
-
+loader = unittest.TestLoader(); suite = unittest.TestSuite(); errs = 0
 for path in test_files:
     mod_name = 'testmod_' + ''.join(c if c.isalnum() else '_' for c in path)
     try:
         spec = importlib.util.spec_from_file_location(mod_name, path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        tests = loader.loadTestsFromModule(module)
-        if tests.countTestCases():
-            suite.addTests(tests)
-        else:
-            print(f'  [INFO] No test cases found in {path}')
+        t = loader.loadTestsFromModule(module)
+        if t.countTestCases(): suite.addTests(t)
     except Exception as e:
-        import_errors += 1
-        print(f'  [IMPORT ERROR] {path}: {e}')
-        traceback.print_exc()
-
-if suite.countTestCases() == 0 and import_errors == 0:
-    print('  [INFO] Test files present but defined 0 test cases — SKIP.')
-    sys.exit(5)
-
-runner = unittest.TextTestRunner(verbosity=2)
-result = runner.run(suite)
-
-if import_errors:
-    sys.exit(2)
-sys.exit(0 if result.wasSuccessful() else 1)
+        errs += 1; print(f'  [IMPORT ERROR] {path}: {e}'); traceback.print_exc()
+if suite.countTestCases() == 0 and errs == 0:
+    print('  [INFO] Test files present but 0 test cases — SKIP.'); sys.exit(5)
+r = unittest.TextTestRunner(verbosity=2).run(suite)
+if errs: sys.exit(2)
+sys.exit(0 if r.wasSuccessful() else 1)
 PYEOF
         TEST_EXIT_CODE=$?
         case "$TEST_EXIT_CODE" in
@@ -701,8 +581,7 @@ PYEOF
 fi
 
 if [ "$TEST_STATE" = "skip" ] && [ "$AUDIT_REQUIRE_TESTS" = "1" ]; then
-    log_warn "AUDIT_REQUIRE_TESTS=1 — a runnable suite is mandatory."
-    log_warn "Promoting SKIP -> FAIL (policy, not a code defect)."
+    log_warn "AUDIT_REQUIRE_TESTS=1 — promoting SKIP -> FAIL (policy)."
     TEST_STATE="fail_policy"
 fi
 
