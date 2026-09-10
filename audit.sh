@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise Audit Tool (v50.0)
+# Enterprise Audit Tool (v51.0)
 # ==============================================================================
 # Invariants: I1–I4. No `sed`. No `2>/dev/null`. No `>/dev/null`.
 #
 # Exit codes:
-#   0  PASS (no defect, no policy violation)
-#   1  FAIL (real defect: broken tests, or coverage below floor)
-#   2  FATAL (setup error: unwritable log, unresolvable rebase)
-#   3  POLICY_FAIL (REQUIRE_TESTS=1 and no runnable suite)
+#   0  PASS          no defect, no policy violation
+#   1  FAIL          real test defect (broken tests)
+#   2  FATAL         setup error
+#   3  POLICY_FAIL   REQUIRE_TESTS=1 and no runnable suite
+#   4  COVERAGE_FAIL coverage below MIN_COVERAGE_THRESHOLD
 # ==============================================================================
 
 if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]; then
@@ -201,7 +202,7 @@ import mymod
 def test_only_covered():
     assert mymod.covered() == 1
 CTESTEOF
-        run_case "G coverage below floor -> FAIL rc=1" "$d" 1 'Below the .* floor' \
+        run_case "G coverage below floor -> COVERAGE_FAIL rc=4" "$d" 4 'VERDICT: COVERAGE_FAIL' \
             AUDIT_FORCE_NO_COV=0 COV_TARGET=mymod MIN_COVERAGE_THRESHOLD=70
     else
         BAD_N=$((BAD_N + 1))
@@ -216,6 +217,58 @@ CTESTEOF
     run_case "H git pull failure (no remote)" "$d" 0 'VERDICT: PASS' \
         AUDIT_FORCE_NO_GIT=0 AUDIT_SKIP_PULL=0
     cd - || return 1
+
+    # --- I: closed loop — broken -> fix -> fixed ---
+    d="$BASE/I_fixloop"; mkdir -p "$d"
+    cat > "$d/test_arith.py" <<'IBROKEN'
+import unittest
+class TestArithmetic(unittest.TestCase):
+    def test_two_plus_two_is_four(self):
+        self.assertEqual(2 + 2, 5)
+IBROKEN
+
+    out_before="$(cd "$d" && env AUDIT_SKIP_PULL=1 AUDIT_FORCE_NO_COV=1 \
+                  LOG_FILE="$SELFTEST_REPORTS/I_before_fix.txt" \
+                  bash "$SCRIPT_PATH" 2>&1)"
+    rc_before=$?
+    verdict_before="$(printf '%s\n' "$out_before" | grep -oE 'AUDIT VERDICT:.*' | head -n1)"
+
+    python3 - "$d/test_arith.py" <<'IFIX'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    src = f.read()
+src = src.replace("self.assertEqual(2 + 2, 5)", "self.assertEqual(2 + 2, 4)")
+with open(path, "w") as f:
+    f.write(src)
+IFIX
+
+    out_after="$(cd "$d" && env AUDIT_SKIP_PULL=1 AUDIT_FORCE_NO_COV=1 \
+                 LOG_FILE="$SELFTEST_REPORTS/I_after_fix.txt" \
+                 bash "$SCRIPT_PATH" 2>&1)"
+    rc_after=$?
+    verdict_after="$(printf '%s\n' "$out_after" | grep -oE 'AUDIT VERDICT:.*' | head -n1)"
+
+    before_ok=false
+    after_ok=false
+    if [ "$rc_before" -eq 1 ] && printf '%s\n' "$out_before" | grep -q 'VERDICT: FAIL'; then
+        before_ok=true
+    fi
+    if [ "$rc_after" -eq 0 ] && printf '%s\n' "$out_after" | grep -q 'VERDICT: PASS'; then
+        after_ok=true
+    fi
+
+    if [ "$before_ok" = true ] && [ "$after_ok" = true ]; then
+        OK_N=$((OK_N + 1))
+        printf '  [OK]  %-46s before rc=%s | after rc=%s (loop closed)\n' \
+            "I broken -> fix -> fixed" "$rc_before" "$rc_after"
+    else
+        BAD_N=$((BAD_N + 1))
+        printf '  [BAD] %-46s before rc=%s | after rc=%s\n' \
+            "I broken -> fix -> fixed" "$rc_before" "$rc_after"
+        [ "$before_ok" = false ] && printf '         phase1: expected rc=1 VERDICT: FAIL, got rc=%s %s\n' "$rc_before" "$verdict_before"
+        [ "$after_ok"  = false ] && printf '         phase2: expected rc=0 VERDICT: PASS, got rc=%s %s\n' "$rc_after"  "$verdict_after"
+    fi
 
     echo "--------------------------------------------------------------------------------"
     printf '  SELF-TEST TOTAL: %d ok, %d bad, %d skipped\n' "$OK_N" "$BAD_N" "$SKIP_N"
@@ -264,7 +317,7 @@ log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 log_hint()  { echo "[HINT] $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v50.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v51.0)                    "
 log_info "================================================================================"
 log_info "Date: $(date)  Directory: $(pwd)"
 log_info "Log: $LOG_FILE  Coverage floor: ${MIN_COVERAGE_THRESHOLD}%"
@@ -425,7 +478,6 @@ TEST_STATE="skip"
 TESTS_FOUND=false
 HAS_PYTEST=false
 HAS_COV=false
-COV_FAILED=false
 
 if [ -d tests ] || [ -d test ]; then
     TESTS_FOUND=true
@@ -516,8 +568,7 @@ PYEOF
                     log_info "Coverage: ${COV_PCT}% (${COV_STMTS:-?} statements)"
                 fi
                 log_warn "Coverage below the ${MIN_COVERAGE_THRESHOLD}% floor."
-                TEST_STATE="fail"
-                COV_FAILED=true
+                TEST_STATE="coverage_fail"
                 ;;
         esac
 
@@ -571,9 +622,10 @@ PYEOF
 
     echo ""
     case "$TEST_STATE" in
-        pass) log_info "TEST RESULT: PASSED" ;;
-        skip) log_info "TEST RESULT: SKIPPED (no tests collected — not a failure)" ;;
-        *)    log_error "TEST RESULT: FAILED (exit code ${TEST_EXIT_CODE:-?})" ;;
+        pass)          log_info "TEST RESULT: PASSED" ;;
+        skip)          log_info "TEST RESULT: SKIPPED (no tests collected — not a failure)" ;;
+        coverage_fail) log_error "TEST RESULT: COVERAGE FAILED (exit code ${TEST_EXIT_CODE:-?})" ;;
+        *)             log_error "TEST RESULT: FAILED (exit code ${TEST_EXIT_CODE:-?})" ;;
     esac
 fi
 
@@ -583,8 +635,9 @@ if [ "$TEST_STATE" = "skip" ] && [ "$AUDIT_REQUIRE_TESTS" = "1" ]; then
 fi
 
 case "$TEST_STATE" in
-    fail)        [ "$AUDIT_STRICT" = "1" ] && FINAL_STATUS=1 ;;
-    fail_policy) [ "$AUDIT_STRICT" = "1" ] && FINAL_STATUS=3 ;;
+    fail)          [ "$AUDIT_STRICT" = "1" ] && FINAL_STATUS=1 ;;
+    fail_policy)   [ "$AUDIT_STRICT" = "1" ] && FINAL_STATUS=3 ;;
+    coverage_fail) [ "$AUDIT_STRICT" = "1" ] && FINAL_STATUS=4 ;;
 esac
 
 echo ""
@@ -597,30 +650,29 @@ if [ "$FINAL_STATUS" -eq 0 ]; then
     fi
 elif [ "$TEST_STATE" = "fail_policy" ]; then
     log_error "AUDIT VERDICT: POLICY_FAIL    (report: $LOG_FILE)"
+elif [ "$TEST_STATE" = "coverage_fail" ]; then
+    log_error "AUDIT VERDICT: COVERAGE_FAIL    (report: $LOG_FILE)"
 else
     log_error "AUDIT VERDICT: FAIL    (report: $LOG_FILE)"
 fi
 log_info "================================================================================"
 
-# ------------------------------------------------------------------------------
-# REMEDIATION HINTS — actionable next steps, selected from the audit's own state
-# ------------------------------------------------------------------------------
 log_info "================================================================================"
 log_info "REMEDIATION HINTS"
 log_info "================================================================================"
 ANY_HINT=false
 
-if [ "$TEST_STATE" = "fail" ] && [ "$COV_FAILED" = "true" ]; then
+if [ "$TEST_STATE" = "coverage_fail" ]; then
     log_hint "Coverage is below MIN_COVERAGE_THRESHOLD (${MIN_COVERAGE_THRESHOLD}%)."
     log_hint "  Fix: add tests to exercise the uncovered lines (see the term-missing"
     log_hint "       report above), or raise MIN_COVERAGE_THRESHOLD if the floor is wrong."
     ANY_HINT=true
 fi
 
-if [ "$TEST_STATE" = "fail" ] && [ "$COV_FAILED" != "true" ]; then
+if [ "$TEST_STATE" = "fail" ]; then
     log_hint "One or more test cases fail. The traceback above shows the exact"
     log_hint "  file, line, and assertion. Fix the code or the test, then re-run"
-    log_hint "  ./audit.sh to verify."
+    log_hint "  ./audit.sh to verify (see self-test case I for a closed loop)."
     ANY_HINT=true
 fi
 
