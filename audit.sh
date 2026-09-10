@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v33.0)
+# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v34.0)
 # ==============================================================================
 # Invariants: I1–I4.
 # No `2>/dev/null` – all stderr is visible.
@@ -290,7 +290,7 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v33.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v34.0)                    "
 log_info "================================================================================"
 log_info "Date:      $(date)"
 log_info "Directory: $(pwd)"
