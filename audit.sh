@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v34.0)
+# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v35.0)
 # ==============================================================================
 # Invariants: I1–I4.
 # No `2>/dev/null` – all stderr is visible.
@@ -290,7 +290,7 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v34.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v35.0)                    "
 log_info "================================================================================"
 log_info "Date:      $(date)"
 log_info "Directory: $(pwd)"
@@ -601,24 +601,29 @@ PYEOF
             COV_ARGS+=("--cov-report=html:htmlcov")
         fi
 
-        # Run pytest and capture output to TMP_COV_OUT
+        # Run pytest
         python3 -m pytest "${COV_ARGS[@]}" -v --tb=short 2>&1 | tee "$TMP_COV_OUT"
         TEST_EXIT_CODE=${PIPESTATUS[0]}
 
         echo ""
         log_info "--- [COVERAGE ANALYSIS] ---"
 
-        # Use `coverage report --fail-under` for bulletproof gating
-        COV_REPORT_OUT="$(mktemp)"
-        # Run coverage report and capture its exit code correctly
-        python3 -m coverage report --fail-under="$MIN_COVERAGE_THRESHOLD" 2>&1 | tee "$COV_REPORT_OUT"
-        COV_FAIL_EXIT=${PIPESTATUS[0]}
+        # Run coverage report and parse the TOTAL line
+        COV_REPORT="$(python3 -m coverage report 2>&1)"
+        echo "$COV_REPORT"
 
-        # Extract the coverage percentage for the log
-        COV_PCT=$(grep -E '^TOTAL' "$COV_REPORT_OUT" | awk '{print $NF}' | tr -d '%')
-        COV_STMTS=$(grep -E '^TOTAL' "$COV_REPORT_OUT" | awk '{print $2}')
+        # Extract total coverage percentage (last field of TOTAL line)
+        TOTAL_LINE=$(echo "$COV_REPORT" | grep -E '^TOTAL')
+        if [ -n "$TOTAL_LINE" ]; then
+            COV_PCT=$(echo "$TOTAL_LINE" | awk '{print $NF}' | tr -d '%')
+            COV_STMTS=$(echo "$TOTAL_LINE" | awk '{print $2}')
+        else
+            # Fallback: take last percentage from the report
+            COV_PCT=$(echo "$COV_REPORT" | grep -oE '[0-9]+%' | tail -n1 | tr -d '%')
+            COV_STMTS=$(echo "$COV_REPORT" | grep -E '[0-9]+%' | tail -n1 | awk '{print $2}')
+        fi
 
-        rm -f "$COV_REPORT_OUT" "$TMP_COV_OUT" ./.coverage ./.coverage.*
+        rm -f "$TMP_COV_OUT" ./.coverage ./.coverage.*
 
         case "$TEST_EXIT_CODE" in
             0) TEST_STATE="pass" ;;
@@ -629,7 +634,8 @@ PYEOF
 
         if [ -n "$COV_PCT" ] && [ "${COV_STMTS:-0}" -gt 0 ]; then
             log_info "Total line coverage: $COV_PCT% (${COV_STMTS} statements)"
-            if [ "$COV_FAIL_EXIT" -eq 0 ]; then
+            # Compare coverage to threshold
+            if [ "$COV_PCT" -ge "$MIN_COVERAGE_THRESHOLD" ]; then
                 log_info "Coverage meets the ${MIN_COVERAGE_THRESHOLD}% floor."
             else
                 log_warn "Coverage below the ${MIN_COVERAGE_THRESHOLD}% floor."
