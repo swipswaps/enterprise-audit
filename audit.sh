@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v35.0)
+# Enterprise One-Shot Git Pull, Codebase Audit & Coverage Runner (v38.0)
 # ==============================================================================
 # Invariants: I1–I4.
 # No `2>/dev/null` – all stderr is visible.
-# Only redirection is the tee pipeline for logging (duplicates, never hides).
 # ==============================================================================
 
-# Guard: if sourced from a file, error and return (keep shell alive).
 if [[ -n "${BASH_SOURCE[0]}" && -f "${BASH_SOURCE[0]}" && "${BASH_SOURCE[0]}" != "${0}" ]]; then
     echo "ERROR: This script must be executed, not sourced." >&2
     echo "Please run it as: ./$(basename "${BASH_SOURCE[0]}")" >&2
@@ -18,9 +16,6 @@ set -uo pipefail
 
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/$(basename "${BASH_SOURCE[0]:-$0}")"
 
-# ------------------------------------------------------------------------------
-# Helper: safe timeout execution
-# ------------------------------------------------------------------------------
 run_with_timeout() {
     local duration="$1"; shift
     if command -v timeout; then
@@ -31,17 +26,11 @@ run_with_timeout() {
     fi
 }
 
-# ------------------------------------------------------------------------------
-# Helper: run grep on .py files only (using find + xargs)
-# ------------------------------------------------------------------------------
 grep_py() {
     local pattern="$1"; shift
     find . -type f -name "*.py" \
-        -not -path "*/.git/*" \
-        -not -path "*/venv/*" \
-        -not -path "*/.venv/*" \
-        -not -path "*/node_modules/*" \
-        -not -path "*/__pycache__/*" \
+        -not -path "*/.git/*" -not -path "*/venv/*" -not -path "*/.venv/*" \
+        -not -path "*/node_modules/*" -not -path "*/__pycache__/*" \
         -print0 2>/dev/null | xargs -0 grep -n "$pattern" "$@" 2>/dev/null
 }
 
@@ -86,7 +75,6 @@ run_self_test() {
         fi
     }
 
-    # Helper: ensure we have pytest-cov – install in a temporary venv if missing
     ensure_pytest_cov() {
         local venv_dir="$1"
         if python3 -c "import pytest, pytest_cov" 2>/dev/null; then
@@ -290,7 +278,7 @@ log_warn() { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v35.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v38.0)                    "
 log_info "================================================================================"
 log_info "Date:      $(date)"
 log_info "Directory: $(pwd)"
@@ -596,31 +584,25 @@ PYEOF
             touch "$TMP_COV_OUT"
         fi
 
-        COV_ARGS=("--cov=$COV_TARGET" "--cov-report=term-missing")
+        COV_ARGS=("--cov=$COV_TARGET" "--cov-report=term-missing" "--cov-fail-under=$MIN_COVERAGE_THRESHOLD")
         if [ "$AUDIT_HTML_COV" = "1" ]; then
             COV_ARGS+=("--cov-report=html:htmlcov")
         fi
 
-        # Run pytest
         python3 -m pytest "${COV_ARGS[@]}" -v --tb=short 2>&1 | tee "$TMP_COV_OUT"
         TEST_EXIT_CODE=${PIPESTATUS[0]}
 
         echo ""
         log_info "--- [COVERAGE ANALYSIS] ---"
 
-        # Run coverage report and parse the TOTAL line
-        COV_REPORT="$(python3 -m coverage report 2>&1)"
-        echo "$COV_REPORT"
-
-        # Extract total coverage percentage (last field of TOTAL line)
-        TOTAL_LINE=$(echo "$COV_REPORT" | grep -E '^TOTAL')
+        # Extract TOTAL line directly from pytest-cov output
+        TOTAL_LINE=$(grep -E '^TOTAL' "$TMP_COV_OUT" | head -n1)
         if [ -n "$TOTAL_LINE" ]; then
             COV_PCT=$(echo "$TOTAL_LINE" | awk '{print $NF}' | tr -d '%')
             COV_STMTS=$(echo "$TOTAL_LINE" | awk '{print $2}')
         else
-            # Fallback: take last percentage from the report
-            COV_PCT=$(echo "$COV_REPORT" | grep -oE '[0-9]+%' | tail -n1 | tr -d '%')
-            COV_STMTS=$(echo "$COV_REPORT" | grep -E '[0-9]+%' | tail -n1 | awk '{print $2}')
+            COV_PCT=""
+            COV_STMTS=""
         fi
 
         rm -f "$TMP_COV_OUT" ./.coverage ./.coverage.*
@@ -629,23 +611,18 @@ PYEOF
             0) TEST_STATE="pass" ;;
             5) TEST_STATE="skip"
                log_info "pytest collected no tests (exit 5) — treating as SKIP." ;;
-            *) TEST_STATE="fail" ;;
+            *)
+                # pytest failed – determine whether coverage was the cause
+                if [ -n "$COV_PCT" ]; then
+                    if [ "$COV_PCT" -lt "$MIN_COVERAGE_THRESHOLD" ]; then
+                        log_warn "Coverage below the ${MIN_COVERAGE_THRESHOLD}% floor."
+                    fi
+                    log_info "Total line coverage: $COV_PCT% (${COV_STMTS:-?} statements)"
+                else
+                    log_warn "Could not parse coverage TOTAL."
+                fi
+                TEST_STATE="fail" ;;
         esac
-
-        if [ -n "$COV_PCT" ] && [ "${COV_STMTS:-0}" -gt 0 ]; then
-            log_info "Total line coverage: $COV_PCT% (${COV_STMTS} statements)"
-            # Compare coverage to threshold
-            if [ "$COV_PCT" -ge "$MIN_COVERAGE_THRESHOLD" ]; then
-                log_info "Coverage meets the ${MIN_COVERAGE_THRESHOLD}% floor."
-            else
-                log_warn "Coverage below the ${MIN_COVERAGE_THRESHOLD}% floor."
-                [ "$TEST_STATE" != "skip" ] && TEST_STATE="fail"
-            fi
-        else
-            log_warn "Could not parse coverage TOTAL or 0 statements measured;"
-            log_warn "check COV_TARGET (currently '$COV_TARGET'). Not gating on coverage."
-            [ "$TEST_STATE" != "skip" ] && TEST_STATE="fail"
-        fi
 
     elif [ "$HAS_PYTEST" = true ]; then
         log_info "pytest-cov is not installed."
@@ -663,10 +640,8 @@ PYEOF
         run_with_timeout 30 python3 - <<'PYEOF'
 import os, sys, unittest, importlib.util, traceback
 
-# Discover all test files in the current directory (recursively)
 test_files = []
 for root, dirs, files in os.walk('.'):
-    # Skip common dirs
     dirs[:] = [d for d in dirs if d not in {'.git', 'venv', '.venv', 'env', '__pycache__', 'node_modules', 'build', 'dist', '.pytest_cache', '.mypy_cache'}]
     for f in files:
         if (f.startswith('test_') and f.endswith('.py')) or f.endswith('_test.py'):
@@ -676,7 +651,6 @@ if not test_files:
     print('  [INFO] No test files found by the fallback runner.')
     sys.exit(5)
 
-# Add current directory to sys.path so imports work
 sys.path.insert(0, os.getcwd())
 
 loader = unittest.TestLoader()
@@ -684,13 +658,11 @@ suite = unittest.TestSuite()
 import_errors = 0
 
 for path in test_files:
-    # Derive module name from path
     mod_name = 'testmod_' + ''.join(c if c.isalnum() else '_' for c in path)
     try:
         spec = importlib.util.spec_from_file_location(mod_name, path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        # Load tests from the module
         tests = loader.loadTestsFromModule(module)
         if tests.countTestCases():
             suite.addTests(tests)
