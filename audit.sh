@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise Audit Tool (v45.0)
+# Enterprise Audit Tool (v47.0)
 # ==============================================================================
 # Invariants: I1–I4. No `sed`. No `2>/dev/null`. No `>/dev/null`.
-# Probes are silent — no spurious Python tracebacks on the happy path.
+#
+# Exit codes:
+#   0  PASS (no defect, no policy violation)
+#   1  FAIL (real defect: broken tests, or coverage below floor)
+#   2  FATAL (setup error: unwritable log, unresolvable rebase)
+#   3  POLICY_FAIL (REQUIRE_TESTS=1 and no runnable suite)
 # ==============================================================================
 
 if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]; then
@@ -31,7 +36,7 @@ grep_py() {
 }
 
 run_self_test() {
-    local PASS_N=0 FAIL_N=0 SKIP_N=0
+    local OK_N=0 BAD_N=0 SKIP_N=0
     BASE="$(mktemp -d -t audit_selftest.XXXXXX || mktemp -d)"
     trap 'rm -rf "${BASE:-}"; rm -f ./.coverage ./.coverage.*' EXIT
 
@@ -49,24 +54,23 @@ run_self_test() {
         rc=$?
         verdict="$(printf '%s\n' "$out" | grep -oE 'AUDIT VERDICT:.*' | head -n1)"
         if ! printf '%s\n' "$out" | grep -q 'AUDIT VERDICT:'; then
-            ok="FAIL(no verdict = crash)"
+            ok="BAD(no verdict = crash)"
         elif [ "$rc" -ne "$exp_rc" ]; then
-            ok="FAIL(rc=$rc want $exp_rc)"
+            ok="BAD(rc=$rc want $exp_rc)"
         elif ! printf '%s\n' "$out" | grep -qiE "$pat"; then
-            ok="FAIL(missing /$pat/)"
+            ok="BAD(missing /$pat/)"
         fi
         if [ "$ok" = "OK" ]; then
-            PASS_N=$((PASS_N + 1))
-            printf '  [PASS] %-46s rc=%s  %s\n' "$label" "$rc" "${verdict:-<none>}"
+            OK_N=$((OK_N + 1))
+            printf '  [OK]  %-46s rc=%s  %s\n' "$label" "$rc" "${verdict:-<none>}"
         else
-            FAIL_N=$((FAIL_N + 1))
-            printf '  [FAIL] %-46s rc=%s  %s\n' "$label" "$rc" "${verdict:-<none>}"
+            BAD_N=$((BAD_N + 1))
+            printf '  [BAD] %-46s rc=%s  %s\n' "$label" "$rc" "${verdict:-<none>}"
             printf '         reason: %s\n' "$ok"
             printf '%s\n' "$out" | tail -n 6 | awk '{print "         | " $0}'
         fi
     }
 
-    # --- ensure_pytest_cov: boolean probe, no traceback, no redirection ---
     ensure_pytest_cov() {
         local venv_dir="$1"
         if python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('pytest') and importlib.util.find_spec('pytest_cov') else 1)"; then
@@ -100,7 +104,9 @@ class TestBroken(unittest.TestCase):
     def test_broken(self):
         self.assertEqual(1 + 1, 3)
 FAILEOF
-    run_case "B real failing suite" "$d" 1 'VERDICT: FAIL'
+    # Pattern deliberately has no trailing space and no suffix so it matches
+    # ONLY the defect verdict, not POLICY_FAIL.
+    run_case "B real failing suite -> FAIL rc=1" "$d" 1 'VERDICT: FAIL'
 
     d="$BASE/C_skip"; mkdir -p "$d/tests"
     cat > "$d/tests/conftest.py" <<'CONFEOF'
@@ -112,7 +118,9 @@ CONFEOF
     cat > "$d/tests/conftest.py" <<'CONF2EOF'
 # conftest only
 CONF2EOF
-    run_case "C2 no-tests + REQUIRE_TESTS=1 (policy)" "$d" 1 'POLICY|policy' \
+    # Policy violation: no runnable suite + REQUIRE_TESTS=1.
+    # Expected: rc=3 (distinct from defect rc=1) and verdict POLICY_FAIL.
+    run_case "C2 no-tests + REQUIRE_TESTS=1 -> POLICY_FAIL rc=3" "$d" 3 'VERDICT: POLICY_FAIL' \
         AUDIT_REQUIRE_TESTS=1
 
     d="$BASE/D_nested"; mkdir -p "$d/tests/unit/deep"
@@ -185,11 +193,12 @@ import mymod
 def test_only_covered():
     assert mymod.covered() == 1
 CTESTEOF
-        run_case "G coverage below floor (measured) -> FAIL" "$d" 1 'Below the .* floor' \
+        # Coverage failure is a defect (rc=1) not a policy (rc=3).
+        run_case "G coverage below floor -> FAIL rc=1" "$d" 1 'Below the .* floor' \
             AUDIT_FORCE_NO_COV=0 COV_TARGET=mymod MIN_COVERAGE_THRESHOLD=70
     else
-        FAIL_N=$((FAIL_N + 1))
-        printf '  [FAIL] %-46s (could not install pytest-cov)\n' "G coverage below floor"
+        BAD_N=$((BAD_N + 1))
+        printf '  [BAD] %-46s (could not install pytest-cov)\n' "G coverage below floor"
     fi
 
     d="$BASE/H_git_rebase"; mkdir -p "$d"
@@ -202,9 +211,9 @@ CTESTEOF
     cd - || return 1
 
     echo "--------------------------------------------------------------------------------"
-    printf '  SELF-TEST TOTAL: %d passed, %d failed, %d skipped\n' "$PASS_N" "$FAIL_N" "$SKIP_N"
+    printf '  SELF-TEST TOTAL: %d ok, %d bad, %d skipped\n' "$OK_N" "$BAD_N" "$SKIP_N"
     echo "================================================================================"
-    [ "$FAIL_N" -eq 0 ]
+    [ "$BAD_N" -eq 0 ]
 }
 
 AUDIT_DRY_RUN=0
@@ -246,7 +255,7 @@ log_warn()  { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v45.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v47.0)                    "
 log_info "================================================================================"
 log_info "Date: $(date)  Directory: $(pwd)"
 log_info "Log: $LOG_FILE  Coverage floor: ${MIN_COVERAGE_THRESHOLD}%"
@@ -556,12 +565,13 @@ PYEOF
 fi
 
 if [ "$TEST_STATE" = "skip" ] && [ "$AUDIT_REQUIRE_TESTS" = "1" ]; then
-    log_warn "AUDIT_REQUIRE_TESTS=1 — promoting SKIP -> FAIL (policy)."
+    log_warn "AUDIT_REQUIRE_TESTS=1 — promoting SKIP -> POLICY_FAIL."
     TEST_STATE="fail_policy"
 fi
 
 case "$TEST_STATE" in
-    fail|fail_policy) [ "$AUDIT_STRICT" = "1" ] && FINAL_STATUS=1 ;;
+    fail)        [ "$AUDIT_STRICT" = "1" ] && FINAL_STATUS=1 ;;
+    fail_policy) [ "$AUDIT_STRICT" = "1" ] && FINAL_STATUS=3 ;;
 esac
 
 echo ""
@@ -572,12 +582,10 @@ if [ "$FINAL_STATUS" -eq 0 ]; then
     else
         log_info "AUDIT VERDICT: PASS    (report: $LOG_FILE)"
     fi
+elif [ "$TEST_STATE" = "fail_policy" ]; then
+    log_error "AUDIT VERDICT: POLICY_FAIL    (report: $LOG_FILE)"
 else
-    if [ "$TEST_STATE" = "fail_policy" ]; then
-        log_error "AUDIT VERDICT: FAIL (POLICY: tests required)    (report: $LOG_FILE)"
-    else
-        log_error "AUDIT VERDICT: FAIL    (report: $LOG_FILE)"
-    fi
+    log_error "AUDIT VERDICT: FAIL    (report: $LOG_FILE)"
 fi
 log_info "================================================================================"
 
