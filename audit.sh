@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise Audit Tool (v51.0)
+# Enterprise Audit Tool (v52.0)
 # ==============================================================================
 # Invariants: I1–I4. No `sed`. No `2>/dev/null`. No `>/dev/null`.
 #
 # Exit codes:
-#   0  PASS          no defect, no policy violation
-#   1  FAIL          real test defect (broken tests)
-#   2  FATAL         setup error
-#   3  POLICY_FAIL   REQUIRE_TESTS=1 and no runnable suite
-#   4  COVERAGE_FAIL coverage below MIN_COVERAGE_THRESHOLD
+#   0  PASS           no defect, no policy violation
+#   1  FAIL           test defect (broken assertions)
+#   2  FATAL          setup error
+#   3  POLICY_FAIL    REQUIRE_TESTS=1 and no runnable suite
+#   4  COVERAGE_FAIL  coverage below MIN_COVERAGE_THRESHOLD
 # ==============================================================================
 
 if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]; then
@@ -24,12 +24,8 @@ SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/$(basename "${BAS
 
 run_with_timeout() {
     local duration="$1"; shift
-    if [ -n "$(command -v timeout)" ]; then
-        timeout "$duration" "$@"
-    else
-        echo "[WARNING] 'timeout' not found; running without time limit." >&2
-        "$@"
-    fi
+    if [ -n "$(command -v timeout)" ]; then timeout "$duration" "$@"
+    else echo "[WARNING] 'timeout' not found; running without time limit." >&2; "$@"; fi
 }
 
 grep_py() {
@@ -218,7 +214,7 @@ CTESTEOF
         AUDIT_FORCE_NO_GIT=0 AUDIT_SKIP_PULL=0
     cd - || return 1
 
-    # --- I: closed loop — broken -> fix -> fixed ---
+    # --- I: closed loop — broken -> fix -> fixed (WITH DIAGNOSTICS) ---
     d="$BASE/I_fixloop"; mkdir -p "$d"
     cat > "$d/test_arith.py" <<'IBROKEN'
 import unittest
@@ -226,6 +222,10 @@ class TestArithmetic(unittest.TestCase):
     def test_two_plus_two_is_four(self):
         self.assertEqual(2 + 2, 5)
 IBROKEN
+
+    echo "  --- CASE I diagnostics ---"
+    echo "  === BEFORE FIX ==="
+    cat -n "$d/test_arith.py"
 
     out_before="$(cd "$d" && env AUDIT_SKIP_PULL=1 AUDIT_FORCE_NO_COV=1 \
                   LOG_FILE="$SELFTEST_REPORTS/I_before_fix.txt" \
@@ -238,10 +238,25 @@ import sys
 path = sys.argv[1]
 with open(path) as f:
     src = f.read()
-src = src.replace("self.assertEqual(2 + 2, 5)", "self.assertEqual(2 + 2, 4)")
+search = "self.assertEqual(2 + 2, 5)"
+repl   = "self.assertEqual(2 + 2, 4)"
+if search not in src:
+    print(f"FIX: search string not found in {path}", file=sys.stderr)
+    sys.exit(3)
+new = src.replace(search, repl)
+n = src.count(search)
+if new == src:
+    print(f"FIX: no change made (replace was a no-op)", file=sys.stderr)
+    sys.exit(4)
 with open(path, "w") as f:
-    f.write(src)
+    f.write(new)
+print(f"FIX: replaced {n} occurrence(s)")
 IFIX
+    fix_rc=$?
+    echo "  fix script rc=$fix_rc"
+
+    echo "  === AFTER FIX ==="
+    cat -n "$d/test_arith.py"
 
     out_after="$(cd "$d" && env AUDIT_SKIP_PULL=1 AUDIT_FORCE_NO_COV=1 \
                  LOG_FILE="$SELFTEST_REPORTS/I_after_fix.txt" \
@@ -268,6 +283,10 @@ IFIX
             "I broken -> fix -> fixed" "$rc_before" "$rc_after"
         [ "$before_ok" = false ] && printf '         phase1: expected rc=1 VERDICT: FAIL, got rc=%s %s\n' "$rc_before" "$verdict_before"
         [ "$after_ok"  = false ] && printf '         phase2: expected rc=0 VERDICT: PASS, got rc=%s %s\n' "$rc_after"  "$verdict_after"
+        echo "  --- PHASE 2 FULL OUTPUT ---"
+        printf '%s\n' "$out_after" | while IFS= read -r line; do printf '         | %s\n' "$line"; done
+        echo "  --- I_after_fix.txt (full) ---"
+        cat -n "$SELFTEST_REPORTS/I_after_fix.txt"
     fi
 
     echo "--------------------------------------------------------------------------------"
@@ -317,7 +336,7 @@ log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 log_hint()  { echo "[HINT] $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v51.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v52.0)                    "
 log_info "================================================================================"
 log_info "Date: $(date)  Directory: $(pwd)"
 log_info "Log: $LOG_FILE  Coverage floor: ${MIN_COVERAGE_THRESHOLD}%"
@@ -664,8 +683,8 @@ ANY_HINT=false
 
 if [ "$TEST_STATE" = "coverage_fail" ]; then
     log_hint "Coverage is below MIN_COVERAGE_THRESHOLD (${MIN_COVERAGE_THRESHOLD}%)."
-    log_hint "  Fix: add tests to exercise the uncovered lines (see the term-missing"
-    log_hint "       report above), or raise MIN_COVERAGE_THRESHOLD if the floor is wrong."
+    log_hint "  Fix: add tests to exercise the uncovered lines (see term-missing above),"
+    log_hint "       or raise MIN_COVERAGE_THRESHOLD if the floor is wrong."
     ANY_HINT=true
 fi
 
