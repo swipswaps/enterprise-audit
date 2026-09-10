@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Enterprise Audit Tool (v41.0)
+# Enterprise Audit Tool (v42.0)
 # ==============================================================================
 # Invariants: I1–I4. No `2>/dev/null`. No `sed`.
 # ==============================================================================
@@ -31,8 +31,6 @@ grep_py() {
 
 run_self_test() {
     local PASS_N=0 FAIL_N=0 SKIP_N=0
-    # NOTE: BASE is intentionally global so the EXIT trap can still see it.
-    # The trap uses ${BASE:-} as extra insurance against set -u.
     BASE="$(mktemp -d -t audit_selftest.XXXXXX || mktemp -d)"
     trap 'rm -rf "${BASE:-}"; rm -f ./.coverage ./.coverage.*' EXIT
 
@@ -246,7 +244,7 @@ log_warn()  { echo "[WARNING] $(date +%H:%M:%S) $*"; }
 log_error() { echo "[ERROR] $(date +%H:%M:%S) $*"; }
 
 log_info "================================================================================"
-log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v41.0)                    "
+log_info "          ONE-SHOT GIT PULL & CODEBASE AUDIT REPORT (v42.0)                    "
 log_info "================================================================================"
 log_info "Date: $(date)  Directory: $(pwd)"
 log_info "Log: $LOG_FILE  Coverage floor: ${MIN_COVERAGE_THRESHOLD}%"
